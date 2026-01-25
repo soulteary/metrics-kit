@@ -134,12 +134,12 @@ func TestHandler_ResponseHeaders(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rr.Code)
 	contentType := rr.Header().Get("Content-Type")
 	// Prometheus metrics endpoint can return various content types
-	assert.True(t, 
+	assert.True(t,
 		contentType == "text/plain; version=0.0.4; charset=utf-8" ||
-		contentType == "text/plain; charset=utf-8" ||
-		contentType == "application/openmetrics-text; version=1.0.0; charset=utf-8" ||
-		strings.Contains(contentType, "text/plain") ||
-		strings.Contains(contentType, "openmetrics"),
+			contentType == "text/plain; charset=utf-8" ||
+			contentType == "application/openmetrics-text; version=1.0.0; charset=utf-8" ||
+			strings.Contains(contentType, "text/plain") ||
+			strings.Contains(contentType, "openmetrics"),
 		"Unexpected Content-Type: %s", contentType)
 }
 

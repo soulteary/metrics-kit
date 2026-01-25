@@ -202,29 +202,29 @@ func TestBucketHelpers(t *testing.T) {
 	t.Run("HTTPDurationBuckets", func(t *testing.T) {
 		buckets := HTTPDurationBuckets()
 		assert.Len(t, buckets, 12)
-		assert.Equal(t, 0.001, buckets[0])  // 1ms
-		assert.Equal(t, 10.0, buckets[11])   // 10s
+		assert.Equal(t, 0.001, buckets[0]) // 1ms
+		assert.Equal(t, 10.0, buckets[11]) // 10s
 	})
 
 	t.Run("RedisDurationBuckets", func(t *testing.T) {
 		buckets := RedisDurationBuckets()
 		assert.Len(t, buckets, 11)
-		assert.Equal(t, 0.0005, buckets[0])  // 0.5ms
-		assert.Equal(t, 1.0, buckets[10])    // 1s
+		assert.Equal(t, 0.0005, buckets[0]) // 0.5ms
+		assert.Equal(t, 1.0, buckets[10])   // 1s
 	})
 
 	t.Run("ExternalAPIDurationBuckets", func(t *testing.T) {
 		buckets := ExternalAPIDurationBuckets()
 		assert.Len(t, buckets, 10)
-		assert.Equal(t, 0.01, buckets[0])  // 10ms
-		assert.Equal(t, 30.0, buckets[9])  // 30s
+		assert.Equal(t, 0.01, buckets[0]) // 10ms
+		assert.Equal(t, 30.0, buckets[9]) // 30s
 	})
 
 	t.Run("BytesBuckets", func(t *testing.T) {
 		buckets := BytesBuckets()
 		assert.Len(t, buckets, 6)
-		assert.Equal(t, 100.0, buckets[0])       // 100B
-		assert.Equal(t, 10485760.0, buckets[5])  // 10MB
+		assert.Equal(t, 100.0, buckets[0])      // 100B
+		assert.Equal(t, 10485760.0, buckets[5]) // 10MB
 	})
 }
 

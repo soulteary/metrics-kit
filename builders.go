@@ -6,10 +6,10 @@ import (
 
 // CounterBuilder provides a fluent interface for building Counter metrics.
 type CounterBuilder struct {
-	registry  *Registry
-	name      string
-	help      string
-	labels    []string
+	registry    *Registry
+	name        string
+	help        string
+	labels      []string
 	constLabels prometheus.Labels
 }
 

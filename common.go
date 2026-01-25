@@ -86,7 +86,7 @@ func (m *RateLimitMetrics) RecordHit(scope string) {
 
 // RedisMetrics holds Redis operation metrics.
 type RedisMetrics struct {
-	OperationsTotal *prometheus.CounterVec
+	OperationsTotal   *prometheus.CounterVec
 	OperationDuration *prometheus.HistogramVec
 	ConnectionsActive prometheus.Gauge
 	ConnectionErrors  prometheus.Counter
@@ -239,8 +239,8 @@ func (m *BackgroundTaskMetrics) DecRunning() {
 
 // AuthMetrics holds authentication metrics.
 type AuthMetrics struct {
-	RequestsTotal    *prometheus.CounterVec
-	SessionsCreated  prometheus.Counter
+	RequestsTotal     *prometheus.CounterVec
+	SessionsCreated   prometheus.Counter
 	SessionsDestroyed prometheus.Counter
 }
 
@@ -288,9 +288,9 @@ func (m *AuthMetrics) RecordSessionDestroyed() {
 
 // OTPMetrics holds OTP/verification code metrics.
 type OTPMetrics struct {
-	ChallengesTotal   *prometheus.CounterVec
-	SendsTotal        *prometheus.CounterVec
-	SendDuration      *prometheus.HistogramVec
+	ChallengesTotal    *prometheus.CounterVec
+	SendsTotal         *prometheus.CounterVec
+	SendDuration       *prometheus.HistogramVec
 	VerificationsTotal *prometheus.CounterVec
 }
 

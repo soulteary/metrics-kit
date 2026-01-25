@@ -109,11 +109,11 @@ func TestDefaultRegistry(t *testing.T) {
 
 func TestRegistry_buildFQName(t *testing.T) {
 	tests := []struct {
-		name      string
-		namespace string
-		subsystem string
+		name       string
+		namespace  string
+		subsystem  string
 		metricName string
-		expected  string
+		expected   string
 	}{
 		{
 			name:       "with namespace only",
