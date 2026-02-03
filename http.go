@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
@@ -70,8 +71,8 @@ type HandlerOpts struct {
 	// MaxRequestsInFlight limits concurrent requests. 0 means no limit.
 	MaxRequestsInFlight int
 
-	// Timeout specifies the maximum time for a request.
-	// 0 means no timeout.
+	// Timeout specifies the maximum time for a request in seconds.
+	// When > 0, the handler is wrapped with http.TimeoutHandler; 0 means no timeout.
 	Timeout int
 }
 
@@ -83,6 +84,8 @@ func DefaultHandlerOpts() HandlerOpts {
 }
 
 // NewHandler creates a new metrics HTTP handler with the given options.
+// When Timeout is greater than 0, the handler is wrapped with http.TimeoutHandler;
+// timed-out requests respond with 503 Service Unavailable.
 func NewHandler(opts HandlerOpts) http.Handler {
 	promOpts := promhttp.HandlerOpts{
 		ErrorHandling:       opts.ErrorHandling,
@@ -92,10 +95,16 @@ func NewHandler(opts HandlerOpts) http.Handler {
 		MaxRequestsInFlight: opts.MaxRequestsInFlight,
 	}
 
+	var h http.Handler
 	if opts.Registry != nil {
-		return promhttp.HandlerFor(opts.Registry.Gatherer(), promOpts)
+		h = promhttp.HandlerFor(opts.Registry.Gatherer(), promOpts)
+	} else {
+		h = promhttp.HandlerFor(prometheus.DefaultGatherer, promOpts)
 	}
-	return promhttp.HandlerFor(prometheus.DefaultGatherer, promOpts)
+	if opts.Timeout > 0 {
+		h = http.TimeoutHandler(h, time.Duration(opts.Timeout)*time.Second, "metrics scrape timeout\n")
+	}
+	return h
 }
 
 // NewFiberHandler creates a new Fiber metrics handler with the given options.

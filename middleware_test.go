@@ -21,6 +21,7 @@ func TestDefaultHTTPMetricsConfig(t *testing.T) {
 	assert.True(t, cfg.IncludeRequestsInFlight)
 	assert.False(t, cfg.IncludeRequestSize)
 	assert.False(t, cfg.IncludeResponseSize)
+	assert.NotNil(t, cfg.PathTransformFunc, "default config should set PathTransformFunc for cardinality safety")
 }
 
 func TestNewHTTPMetrics(t *testing.T) {
@@ -314,6 +315,53 @@ func TestFiberMiddleware_NoInFlightGauge(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/api/test", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestFiberMiddleware_DefaultPathNormalize(t *testing.T) {
+	// Default config uses DefaultPathNormalize: /users/1 and /users/2 map to same label /users/:id
+	cfg := DefaultHTTPMetricsConfig()
+	cfg.Namespace = "test_default_norm"
+	cfg.Subsystem = "http"
+	m := NewHTTPMetrics(cfg)
+	middleware := m.FiberMiddleware(cfg)
+
+	app := fiber.New()
+	app.Use(middleware)
+	app.Get("/users/:id", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req1 := httptest.NewRequest("GET", "/users/1", nil)
+	resp1, err := app.Test(req1)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp1.StatusCode)
+
+	req2 := httptest.NewRequest("GET", "/users/2", nil)
+	resp2, err := app.Test(req2)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+}
+
+func TestFiberMiddleware_SanitizeLabelValue(t *testing.T) {
+	// Path with newline should be sanitized so exposition format is not broken
+	cfg := HTTPMetricsConfig{
+		Namespace:         "test_sanitize",
+		Subsystem:         "http",
+		PathTransformFunc: func(p string) string { return p },
+	}
+	m := NewHTTPMetrics(cfg)
+	middleware := m.FiberMiddleware(cfg)
+
+	app := fiber.New()
+	app.Use(middleware)
+	app.Get("/*", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest("GET", "/api/foo%0abar", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)

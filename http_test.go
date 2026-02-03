@@ -328,3 +328,22 @@ func TestNewFiberHandler_WithRegistry(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
+
+func TestNewHandler_WithTimeout(t *testing.T) {
+	r := NewRegistry("test_timeout")
+	r.MustRegister(prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "test_timeout",
+		Name:      "count",
+		Help:      "Count",
+	}))
+
+	opts := HandlerOpts{Registry: r, Timeout: 10}
+	handler := NewHandler(opts)
+	require.NotNil(t, handler)
+
+	req, err := http.NewRequest("GET", "/metrics", http.NoBody)
+	require.NoError(t, err)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+}

@@ -61,12 +61,15 @@ type HTTPMetricsConfig struct {
 }
 
 // DefaultHTTPMetricsConfig returns the default configuration for HTTP metrics.
+// PathTransformFunc is set to DefaultPathNormalize to avoid label cardinality explosion in production;
+// override to nil or a custom function if you need raw paths or different normalization.
 func DefaultHTTPMetricsConfig() HTTPMetricsConfig {
 	return HTTPMetricsConfig{
 		Subsystem:               "http",
 		DurationBuckets:         HTTPDurationBuckets(),
 		SizeBuckets:             BytesBuckets(),
 		IncludeRequestsInFlight: true,
+		PathTransformFunc:       DefaultPathNormalize,
 	}
 }
 
@@ -138,12 +141,12 @@ func (m *HTTPMetrics) FiberMiddleware(cfg HTTPMetricsConfig) fiber.Handler {
 			return c.Next()
 		}
 
-		// Transform path if a transform function is provided
+		// Transform path if a transform function is provided (e.g. normalize /users/123 -> /users/:id)
 		if cfg.PathTransformFunc != nil {
 			path = cfg.PathTransformFunc(path)
 		}
-
-		method := c.Method()
+		path = SanitizeLabelValue(path, DefaultLabelValueMaxLength)
+		method := SanitizeLabelValue(c.Method(), DefaultLabelValueMaxLength)
 
 		// Track in-flight requests
 		if m.RequestsInFlight != nil {
@@ -163,7 +166,7 @@ func (m *HTTPMetrics) FiberMiddleware(cfg HTTPMetricsConfig) fiber.Handler {
 
 		// Record metrics
 		duration := time.Since(start).Seconds()
-		status := strconv.Itoa(c.Response().StatusCode())
+		status := SanitizeLabelValue(strconv.Itoa(c.Response().StatusCode()), DefaultLabelValueMaxLength)
 
 		m.RequestsTotal.WithLabelValues(method, path, status).Inc()
 		m.RequestDuration.WithLabelValues(method, path).Observe(duration)
@@ -193,13 +196,19 @@ func NewFiberMiddlewareWithConfig(cfg HTTPMetricsConfig) fiber.Handler {
 
 // RecordRequest records a single HTTP request metric.
 // This is useful for manual metric recording outside of middleware.
+// Method, path, and status are sanitized for safe use as label values.
 func (m *HTTPMetrics) RecordRequest(method, path, status string, duration time.Duration) {
+	method = SanitizeLabelValue(method, DefaultLabelValueMaxLength)
+	path = SanitizeLabelValue(path, DefaultLabelValueMaxLength)
+	status = SanitizeLabelValue(status, DefaultLabelValueMaxLength)
 	m.RequestsTotal.WithLabelValues(method, path, status).Inc()
 	m.RequestDuration.WithLabelValues(method, path).Observe(duration.Seconds())
 }
 
 // RecordRequestWithSize records an HTTP request with size information.
 func (m *HTTPMetrics) RecordRequestWithSize(method, path, status string, duration time.Duration, reqSize, respSize int) {
+	method = SanitizeLabelValue(method, DefaultLabelValueMaxLength)
+	path = SanitizeLabelValue(path, DefaultLabelValueMaxLength)
 	m.RecordRequest(method, path, status, duration)
 
 	if m.RequestSize != nil && reqSize > 0 {
