@@ -13,8 +13,9 @@
 
 - **注册表管理**：支持命名空间/子系统的自定义 Prometheus 注册表
 - **流式构建器**：Counter、Gauge、Histogram、Summary 构建器，支持链式调用
-- **HTTP 处理器**：标准库和 Fiber 兼容的 `/metrics` 端点处理器
-- **HTTP 中间件**：Fiber 框架的请求指标收集中间件
+- **HTTP 处理器**：标准库和 Fiber 兼容的 `/metrics` 端点处理器（可通过 `HandlerOpts` 设置超时）
+- **HTTP 中间件**：Fiber 请求指标收集中间件，默认路径归一化以控制标签基数
+- **标签安全**：`SanitizeLabelValue` 处理不可信标签值；`DefaultPathNormalize` 用于路径类标签
 - **通用指标**：预置的缓存、限流、Redis、认证、OTP 等常用指标模式
 - **桶预设**：HTTP、Redis、外部 API、字节大小的预定义直方图桶
 
@@ -82,14 +83,23 @@ import (
     metrics "github.com/soulteary/metrics-kit"
 )
 
-// 标准库
+// 标准库（仅使用默认 Prometheus 注册表）
 http.Handle("/metrics", metrics.Handler())
 
-// 使用自定义注册表
+// 使用自定义注册表时请用 HandlerFor 或 NewHandler，否则应用内指标不会暴露
 http.Handle("/metrics", metrics.HandlerFor(registry))
 
 // Fiber 框架
 app.Get("/metrics", metrics.FiberHandler())
+app.Get("/metrics", metrics.FiberHandlerFor(registry)) // 使用自定义注册表时
+
+// 使用选项（如自定义注册表 + 抓取超时秒数）
+handler := metrics.NewHandler(metrics.HandlerOpts{
+    Registry:          registry,
+    EnableOpenMetrics: true,
+    Timeout:           10,
+})
+http.Handle("/metrics", handler)
 ```
 
 ### HTTP 中间件 (Fiber)
@@ -105,7 +115,7 @@ app := fiber.New()
 // 简单中间件
 app.Use(metrics.NewFiberMiddleware("myservice"))
 
-// 自定义配置
+// 自定义配置（默认配置已使用 DefaultPathNormalize）
 cfg := metrics.HTTPMetricsConfig{
     Namespace:               "myservice",
     Subsystem:               "api",
@@ -113,11 +123,7 @@ cfg := metrics.HTTPMetricsConfig{
     IncludeRequestSize:      true,
     IncludeResponseSize:     true,
     IncludeRequestsInFlight: true,
-    PathTransformFunc: func(path string) string {
-        // 规范化带 ID 的路径
-        // /users/123 -> /users/:id
-        return path
-    },
+    PathTransformFunc:       metrics.DefaultPathNormalize, // /users/123 -> /users/:id
 }
 app.Use(metrics.NewFiberMiddlewareWithConfig(cfg))
 ```
@@ -197,6 +203,7 @@ metrics.DefaultBuckets()
 metrics-kit/
 ├── registry.go       # 带命名空间/子系统的注册表管理
 ├── builders.go       # 流式指标构建器（Counter、Histogram、Gauge、Summary）
+├── labels.go         # 标签安全：SanitizeLabelValue、DefaultPathNormalize
 ├── http.go           # /metrics 端点的 HTTP 处理器
 ├── middleware.go     # Fiber HTTP 中间件
 ├── common.go         # 通用指标模式（缓存、Redis、认证、OTP 等）
@@ -269,6 +276,16 @@ func main() {
     wardenCalls.RecordSuccess("check_user", 50*time.Millisecond)
 }
 ```
+
+## 安全与部署
+
+- **保护 `/metrics` 端点**：`Handler()`、`HandlerFor()` 等返回的处理器不包含鉴权。请勿将 `/metrics` 暴露到公网。建议使用独立管理端口、网络策略、反向代理鉴权或 IP 白名单，仅允许监控系统抓取。
+- **路径标签基数**：默认 HTTP 指标配置使用 `DefaultPathNormalize`，将 `/users/123` 规范为 `/users/:id`。生产环境务必做路径归一化或跳过部分路径，避免时间序列基数爆炸和 DoS 风险。
+- **不可信输入的标签值**：对来自用户或外部的标签值（如 CommonMetrics 的 scope、operation、provider），应只传入受控的枚举值，或使用 `SanitizeLabelValue(s, metrics.DefaultLabelValueMaxLength)` 做清洗，避免破坏 exposition 格式（如换行符）。示例：在调用 `rateLimit.RecordHit(scope)` 前执行 `scope := metrics.SanitizeLabelValue(userInput, metrics.DefaultLabelValueMaxLength)`。
+
+## 注册表与 Unregister
+
+- `Unregister(name)` 仅对通过 `Register(name, collector)` 注册的采集器生效。通过构建器 `Build()`/`BuildVec()` 创建的指标使用 `MustRegister` 注册且未按名称追踪；若要移除，需保留 collector 引用并调用底层 `registry.PrometheusRegistry().Unregister(collector)`。
 
 ## 要求
 
