@@ -1,6 +1,6 @@
 # metrics-kit
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit)
+[![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit/v2.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit/v2)
 [![Go Report Card](.github/goreportcard.svg)](.github/goreportcard-report.md)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/soulteary/metrics-kit/graph/badge.svg)](https://codecov.io/gh/soulteary/metrics-kit)
@@ -22,7 +22,7 @@ A unified Prometheus metrics toolkit for Go services. This package provides metr
 ## Installation
 
 ```bash
-go get github.com/soulteary/metrics-kit
+go get github.com/soulteary/metrics-kit/v2
 ```
 
 ## Usage
@@ -31,7 +31,7 @@ go get github.com/soulteary/metrics-kit
 
 ```go
 import (
-    metrics "github.com/soulteary/metrics-kit"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 // Create a registry with namespace
@@ -80,7 +80,7 @@ activeConns.Dec()
 ```go
 import (
     "net/http"
-    metrics "github.com/soulteary/metrics-kit"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 // Standard library (uses default Prometheus registry only)
@@ -106,8 +106,8 @@ http.Handle("/metrics", handler)
 
 ```go
 import (
-    "github.com/gofiber/fiber/v2"
-    metrics "github.com/soulteary/metrics-kit"
+    "github.com/gofiber/fiber/v3"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 app := fiber.New()
@@ -218,8 +218,8 @@ metrics-kit/
 package main
 
 import (
-    "github.com/gofiber/fiber/v2"
-    metrics "github.com/soulteary/metrics-kit"
+    "github.com/gofiber/fiber/v3"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 func main() {
@@ -240,7 +240,7 @@ func main() {
     app.Get("/metrics", metrics.FiberHandlerFor(registry))
     
     // Use metrics in handlers
-    app.Post("/v1/otp/challenges", func(c *fiber.Ctx) error {
+    app.Post("/v1/otp/challenges", func(c fiber.Ctx) error {
         // ... create challenge logic ...
         otp.RecordChallengeCreated("email", "login", "success")
         return c.JSON(response)
@@ -256,7 +256,7 @@ func main() {
 package main
 
 import (
-    metrics "github.com/soulteary/metrics-kit"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 func main() {
@@ -291,7 +291,9 @@ func main() {
 
 - Go 1.26 or later
 - github.com/prometheus/client_golang v1.22.0+
-- github.com/gofiber/fiber/v2 v2.52.6+ (for Fiber middleware)
+- github.com/gofiber/fiber/v3 v3.4.0+ (for Fiber middleware)
+
+This v2 module line targets Fiber v3. Applications that still use Fiber v2 should remain on `github.com/soulteary/metrics-kit` v1.
 
 ## Test Coverage
 

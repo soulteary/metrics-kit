@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -145,10 +145,10 @@ func TestFiberMiddleware_SkipPaths(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware)
-	app.Get("/health", func(c *fiber.Ctx) error {
+	app.Get("/health", func(c fiber.Ctx) error {
 		return c.SendString("OK")
 	})
-	app.Get("/api/users", func(c *fiber.Ctx) error {
+	app.Get("/api/users", func(c fiber.Ctx) error {
 		return c.SendString("users")
 	})
 
@@ -183,7 +183,7 @@ func TestFiberMiddleware_PathTransformFunc(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware)
-	app.Get("/users/:id", func(c *fiber.Ctx) error {
+	app.Get("/users/:id", func(c fiber.Ctx) error {
 		return c.SendString("user")
 	})
 
@@ -206,7 +206,7 @@ func TestFiberMiddleware_RequestResponseSize(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware)
-	app.Post("/api/data", func(c *fiber.Ctx) error {
+	app.Post("/api/data", func(c fiber.Ctx) error {
 		return c.SendString("response data here")
 	})
 
@@ -231,7 +231,7 @@ func TestFiberMiddleware_InFlightRequests(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware)
-	app.Get("/api/test", func(c *fiber.Ctx) error {
+	app.Get("/api/test", func(c fiber.Ctx) error {
 		return c.SendString("OK")
 	})
 
@@ -252,7 +252,7 @@ func TestFiberMiddleware_ErrorHandling(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware)
-	app.Get("/api/error", func(c *fiber.Ctx) error {
+	app.Get("/api/error", func(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "internal error")
 	})
 
@@ -274,10 +274,10 @@ func TestFiberMiddleware_MultipleRequests(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware)
-	app.Get("/api/test", func(c *fiber.Ctx) error {
+	app.Get("/api/test", func(c fiber.Ctx) error {
 		return c.SendString("OK")
 	})
-	app.Post("/api/create", func(c *fiber.Ctx) error {
+	app.Post("/api/create", func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusCreated).SendString("created")
 	})
 
@@ -310,7 +310,7 @@ func TestFiberMiddleware_NoInFlightGauge(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware)
-	app.Get("/api/test", func(c *fiber.Ctx) error {
+	app.Get("/api/test", func(c fiber.Ctx) error {
 		return c.SendString("OK")
 	})
 
@@ -330,7 +330,7 @@ func TestFiberMiddleware_DefaultPathNormalize(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware)
-	app.Get("/users/:id", func(c *fiber.Ctx) error {
+	app.Get("/users/:id", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
 
@@ -357,7 +357,7 @@ func TestFiberMiddleware_SanitizeLabelValue(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(middleware)
-	app.Get("/*", func(c *fiber.Ctx) error {
+	app.Get("/*", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
 

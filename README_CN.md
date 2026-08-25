@@ -1,7 +1,7 @@
 # metrics-kit
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit)
-[![Go Report Card](https://goreportcard.com/badge/github.com/soulteary/metrics-kit)](https://goreportcard.com/report/github.com/soulteary/metrics-kit)
+[![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit/v2.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit/v2)
+[![Go Report Card](https://goreportcard.com/badge/github.com/soulteary/metrics-kit/v2)](https://goreportcard.com/report/github.com/soulteary/metrics-kit/v2)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/soulteary/metrics-kit/graph/badge.svg)](https://codecov.io/gh/soulteary/metrics-kit)
 
@@ -22,7 +22,7 @@
 ## 安装
 
 ```bash
-go get github.com/soulteary/metrics-kit
+go get github.com/soulteary/metrics-kit/v2
 ```
 
 ## 使用
@@ -31,7 +31,7 @@ go get github.com/soulteary/metrics-kit
 
 ```go
 import (
-    metrics "github.com/soulteary/metrics-kit"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 // 创建带命名空间的注册表
@@ -80,7 +80,7 @@ activeConns.Dec()
 ```go
 import (
     "net/http"
-    metrics "github.com/soulteary/metrics-kit"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 // 标准库（仅使用默认 Prometheus 注册表）
@@ -106,8 +106,8 @@ http.Handle("/metrics", handler)
 
 ```go
 import (
-    "github.com/gofiber/fiber/v2"
-    metrics "github.com/soulteary/metrics-kit"
+    "github.com/gofiber/fiber/v3"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 app := fiber.New()
@@ -218,8 +218,8 @@ metrics-kit/
 package main
 
 import (
-    "github.com/gofiber/fiber/v2"
-    metrics "github.com/soulteary/metrics-kit"
+    "github.com/gofiber/fiber/v3"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 func main() {
@@ -240,7 +240,7 @@ func main() {
     app.Get("/metrics", metrics.FiberHandlerFor(registry))
     
     // 在处理器中使用指标
-    app.Post("/v1/otp/challenges", func(c *fiber.Ctx) error {
+    app.Post("/v1/otp/challenges", func(c fiber.Ctx) error {
         // ... 创建 challenge 逻辑 ...
         otp.RecordChallengeCreated("email", "login", "success")
         return c.JSON(response)
@@ -256,7 +256,7 @@ func main() {
 package main
 
 import (
-    metrics "github.com/soulteary/metrics-kit"
+    metrics "github.com/soulteary/metrics-kit/v2"
 )
 
 func main() {
@@ -291,7 +291,9 @@ func main() {
 
 - Go 1.26 或更高版本
 - github.com/prometheus/client_golang v1.22.0+
-- github.com/gofiber/fiber/v2 v2.52.6+（用于 Fiber 中间件）
+- github.com/gofiber/fiber/v3 v3.4.0+（用于 Fiber 中间件）
+
+此 v2 模块版本面向 Fiber v3。仍使用 Fiber v2 的应用应继续使用 `github.com/soulteary/metrics-kit` v1。
 
 ## 测试覆盖率
 
