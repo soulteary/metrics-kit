@@ -1,7 +1,7 @@
 # metrics-kit
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit/v2.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit/v2)
-[![Go Report Card](https://goreportcard.com/badge/github.com/soulteary/metrics-kit/v2)](https://goreportcard.com/report/github.com/soulteary/metrics-kit/v2)
+[![Go Report Card](.github/goreportcard.svg)](.github/goreportcard-report.md)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/soulteary/metrics-kit/graph/badge.svg)](https://codecov.io/gh/soulteary/metrics-kit)
 
