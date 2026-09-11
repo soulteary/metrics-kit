@@ -51,47 +51,58 @@ type registryState struct {
 	shapes map[string]string
 }
 
-// shapeStores maps an underlying *prometheus.Registry to its shape records.
+// newRegistryState allocates state for a registry this package owns.
+func newRegistryState() *registryState {
+	return &registryState{
+		collectors: make(map[string]prometheus.Collector),
+		shapes:     make(map[string]string),
+	}
+}
+
+// shapeStores maps a registry this package does NOT own to its shape records.
 //
 // Shape knowledge has to follow the REGISTRY, not the wrapper: two wrappers
-// over one registry (two DefaultRegistry() calls, say) both register into the
-// same place, so a shape recorded through one must be visible to the other.
-// Keeping it per-wrapper left the second wrapper with no prior entry, so it
-// recorded its own shape, got AlreadyRegisteredError, and handed back the
-// incompatible existing collector.
+// over one registry both register into the same place, so a shape recorded
+// through one must be visible to the other. Keeping it per-wrapper left the
+// second wrapper with no prior entry, so it recorded its own shape, got
+// AlreadyRegisteredError, and handed back the incompatible existing collector.
+//
+// Only stateFor's callers need the lookup, and the only one is
+// DefaultRegistry: NewRegistry and NewRegistryWithSubsystem mint a registry
+// nobody else can be wrapping, so they allocate state directly. Routing those
+// through here instead added a permanent entry -- keyed by the registry, which
+// retains its collectors -- for every registry a test, a reload or a repeated
+// middleware construction ever created, and nothing removed them.
 var shapeStores sync.Map // *prometheus.Registry -> *registryState
 
-// stateFor returns the shared state for reg, creating it on first use.
+// stateFor returns the shared state for a registry owned elsewhere, creating
+// it on first use. The entry is permanent, which is why this is reserved for
+// process-global registries.
 func stateFor(reg *prometheus.Registry) *registryState {
 	if existing, ok := shapeStores.Load(reg); ok {
 		return existing.(*registryState)
 	}
-	actual, _ := shapeStores.LoadOrStore(reg, &registryState{
-		collectors: make(map[string]prometheus.Collector),
-		shapes:     make(map[string]string),
-	})
+	actual, _ := shapeStores.LoadOrStore(reg, newRegistryState())
 	return actual.(*registryState)
 }
 
 // NewRegistry creates a new Registry with the given namespace.
 // The namespace is typically the service name (e.g., "herald", "stargate").
 func NewRegistry(namespace string) *Registry {
-	reg := prometheus.NewRegistry()
 	return &Registry{
-		registry:  reg,
+		registry:  prometheus.NewRegistry(),
 		namespace: namespace,
-		state:     stateFor(reg),
+		state:     newRegistryState(),
 	}
 }
 
 // NewRegistryWithSubsystem creates a new Registry with namespace and subsystem.
 func NewRegistryWithSubsystem(namespace, subsystem string) *Registry {
-	reg := prometheus.NewRegistry()
 	return &Registry{
-		registry:  reg,
+		registry:  prometheus.NewRegistry(),
 		namespace: namespace,
 		subsystem: subsystem,
-		state:     stateFor(reg),
+		state:     newRegistryState(),
 	}
 }
 
@@ -167,21 +178,32 @@ func (r *Registry) MustRegister(collectors ...prometheus.Collector) {
 // hidden. shape is empty for counters and gauges, which carry no such
 // configuration.
 func (r *Registry) registerOrExisting(c prometheus.Collector, id, shape string) prometheus.Collector {
+	// The lock spans the registration. Prometheus decides who owns the
+	// descriptor, and only the winner may record its shape; publishing the
+	// shape first and registering afterwards got both halves wrong.
+	//
+	// Two goroutines building the same NEW metric both recorded a shape, then
+	// one lost Register -- and, having seen no prior entry, read its own
+	// AlreadyRegisteredError as "registered outside this package" and panicked
+	// on a collector this package had just created. And after a genuine
+	// external-collector panic the rejected shape stayed behind, so retrying
+	// the same build found it "known", matched it against itself, and returned
+	// the incompatible external collector the panic existed to refuse.
+	//
+	// Taking r.state.mu around r.registry.Register cannot deadlock: the
+	// Prometheus registry's own lock is only ever taken while holding this
+	// one, never the other way round.
 	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+
 	if r.state.shapes == nil {
 		r.state.shapes = make(map[string]string)
 	}
-	previous, known := r.state.shapes[id]
-	if known && previous != shape {
-		r.state.mu.Unlock()
-		panic(shapeConflict(id, previous, shape))
-	}
-	r.state.shapes[id] = shape
-	r.state.mu.Unlock()
 
 	if err := r.registry.Register(c); err != nil {
 		var already prometheus.AlreadyRegisteredError
 		if errors.As(err, &already) {
+			previous, known := r.state.shapes[id]
 			if !known {
 				// Prometheus says this descriptor is taken, but nothing
 				// recorded its shape -- it was registered outside the
@@ -192,10 +214,20 @@ func (r *Registry) registerOrExisting(c prometheus.Collector, id, shape string) 
 				// the mismatch this check exists to catch slips through.
 				panic(shapeConflict(id, "unknown (registered outside this package)", shape))
 			}
+			if previous != shape {
+				panic(shapeConflict(id, previous, shape))
+			}
 			return already.ExistingCollector
 		}
 		panic(err)
 	}
+
+	// Registration succeeded, so the descriptor was free. Any shape still
+	// recorded for this id described a collector that is no longer registered
+	// -- the caller reached PrometheusRegistry().Unregister -- and Prometheus
+	// accepts a different layout after that, so replace it rather than
+	// reporting a conflict with a collector that has gone.
+	r.state.shapes[id] = shape
 	return c
 }
 
@@ -210,16 +242,42 @@ func shapeConflict(id, previous, requested string) string {
 
 // metricID is the identity registerOrExisting keys its shape records by.
 //
+// It mirrors what Prometheus treats as a descriptor's identity: the
+// fully-qualified name, the variable label NAME SET, and the constant labels.
+//
 // Labels are SORTED, because a Prometheus descriptor's identity is the label
 // NAME SET, not its order: Labels("method","path") and Labels("path","method")
 // collide. Sorting here makes them share an id so the differing order shows up
 // as a shape conflict; keying on the given order instead hid it, and
 // AlreadyRegisteredError then handed back the first vector, silently swapping
 // the two label values in the second caller's WithLabelValues calls.
-func (r *Registry) metricID(name string, labels []string) string {
+func (r *Registry) metricID(name string, labels []string, constLabels prometheus.Labels) string {
 	sorted := append([]string(nil), labels...)
 	sort.Strings(sorted)
-	return prometheus.BuildFQName(r.namespace, r.subsystem, name) + "{" + strings.Join(sorted, ",") + "}"
+	return prometheus.BuildFQName(r.namespace, r.subsystem, name) +
+		"{" + strings.Join(sorted, ",") + "}" + constLabelID(constLabels)
+}
+
+// constLabelID renders the constant labels, which ARE part of a descriptor's
+// identity: Prometheus registers two collectors that differ only there side by
+// side. Leaving them out of the id filed both under one shape record, so a
+// perfectly valid pair of histograms -- same name and variable labels, one per
+// const-label value -- panicked as a conflict the moment their buckets
+// differed, before Prometheus ever saw the second registration.
+func constLabelID(constLabels prometheus.Labels) string {
+	if len(constLabels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(constLabels))
+	for k := range constLabels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + strconv.Quote(constLabels[k])
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 // labelShape fingerprints the label ORDER, which the id deliberately discards.

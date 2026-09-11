@@ -318,3 +318,152 @@ func TestUnknownPriorShapeIsNotAssumedCompatible(t *testing.T) {
 	}()
 	r.Histogram("external_seconds").Help("External").Buckets([]float64{5, 10}).Build()
 }
+
+// TestConcurrentBuildOfOneNewMetricDoesNotPanic is the regression test for
+// publishing the shape before Register decided who owns the descriptor. Both
+// goroutines recorded a shape, then the loser of the Prometheus registration
+// race read its own AlreadyRegisteredError against a shapes entry it had seen
+// as absent -- and panicked with "registered outside this package" over a
+// collector this very package had just built.
+func TestConcurrentBuildOfOneNewMetricDoesNotPanic(t *testing.T) {
+	const goroutines = 64
+
+	for attempt := 0; attempt < 300; attempt++ {
+		r := NewRegistry("app")
+
+		var start sync.WaitGroup
+		start.Add(1)
+		var done sync.WaitGroup
+		panics := make(chan any, goroutines)
+		built := make(chan prometheus.Histogram, goroutines)
+
+		for i := 0; i < goroutines; i++ {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				defer func() {
+					if rec := recover(); rec != nil {
+						panics <- rec
+					}
+				}()
+				start.Wait()
+				built <- r.Histogram("latency_seconds").Help("Latency").Buckets([]float64{0.1, 1}).Build()
+			}()
+		}
+
+		start.Done()
+		done.Wait()
+		close(panics)
+		close(built)
+
+		if rec, ok := <-panics; ok {
+			t.Fatalf("concurrent build of one new metric panicked: %v", rec)
+		}
+
+		var first prometheus.Histogram
+		n := 0
+		for h := range built {
+			n++
+			if first == nil {
+				first = h
+			} else if h != first {
+				t.Fatal("concurrent builds of one metric returned different collectors")
+			}
+		}
+		if n != goroutines {
+			t.Fatalf("%d builds completed, want %d", n, goroutines)
+		}
+	}
+}
+
+// TestRejectedExternalShapeIsNotRemembered is the regression test for leaving
+// the requested shape behind after an external-collector panic. The retry then
+// found its own unverified entry, matched it against itself, and returned the
+// incompatible external collector the first attempt had refused.
+func TestRejectedExternalShapeIsNotRemembered(t *testing.T) {
+	r := NewRegistry("app")
+
+	r.MustRegister(prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "app",
+		Name:      "external_seconds",
+		Help:      "External",
+		Buckets:   []float64{0.1, 1},
+	}))
+
+	build := func() (rec any) {
+		defer func() { rec = recover() }()
+		r.Histogram("external_seconds").Help("External").Buckets([]float64{5, 10}).Build()
+		return nil
+	}
+
+	if build() == nil {
+		t.Fatal("the first attempt did not refuse the externally registered collector")
+	}
+	second := build()
+	if second == nil {
+		t.Fatal("the retry reused the external collector; the refused shape was remembered as trusted")
+	}
+	if msg := fmt.Sprint(second); !strings.Contains(msg, "unknown") {
+		t.Errorf("retry panic = %q, want it to still report the prior shape as unknown", msg)
+	}
+}
+
+// TestShapeIsReplaceableAfterUnregister is the regression test for comparing
+// against a collector that is gone. Prometheus accepts a different layout once
+// the old collector is unregistered, but the shape record outlived it and
+// refused the valid replacement -- breaking metric replacement during reloads
+// and tests.
+func TestShapeIsReplaceableAfterUnregister(t *testing.T) {
+	r := NewRegistry("app")
+
+	first := r.Histogram("latency_seconds").Help("Latency").Buckets([]float64{0.1, 1}).Build()
+	if !r.PrometheusRegistry().Unregister(first) {
+		t.Fatal("Unregister reported the collector was not registered")
+	}
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Errorf("re-registering after Unregister panicked: %v", rec)
+		}
+	}()
+	second := r.Histogram("latency_seconds").Help("Latency").Buckets([]float64{5, 10}).Build()
+	if second == first {
+		t.Error("re-registration returned the unregistered collector")
+	}
+}
+
+// TestConstLabelsSeparateMetricIdentities is the regression test for keying
+// shapes on name and variable labels alone. Prometheus registers two
+// collectors differing only in constant-label VALUES side by side, but they
+// shared one shape record here, so a valid pair -- one histogram per tenant,
+// say, with different buckets -- panicked as a conflict before Prometheus ever
+// saw the second registration.
+func TestConstLabelsSeparateMetricIdentities(t *testing.T) {
+	r := NewRegistry("app")
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("two collectors distinguished by their const labels were reported as a conflict: %v", rec)
+		}
+	}()
+
+	a := r.Histogram("latency_seconds").Help("Latency").
+		ConstLabels(prometheus.Labels{"tenant": "a"}).Buckets([]float64{0.1, 1}).Build()
+	b := r.Histogram("latency_seconds").Help("Latency").
+		ConstLabels(prometheus.Labels{"tenant": "b"}).Buckets([]float64{5, 10}).Build()
+
+	if a == b {
+		t.Error("the two const-label variants returned the same collector")
+	}
+
+	// The guard still applies WITHIN one const-label identity.
+	conflict := func() (rec any) {
+		defer func() { rec = recover() }()
+		r.Histogram("latency_seconds").Help("Latency").
+			ConstLabels(prometheus.Labels{"tenant": "a"}).Buckets([]float64{99}).Build()
+		return nil
+	}()
+	if conflict == nil {
+		t.Error("differing buckets under the same const labels were silently accepted")
+	}
+}
