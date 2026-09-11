@@ -3,6 +3,7 @@
 package metrics
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -94,6 +95,25 @@ func (r *Registry) Register(name string, collector prometheus.Collector) error {
 // MustRegister registers collectors and panics on error.
 func (r *Registry) MustRegister(collectors ...prometheus.Collector) {
 	r.registry.MustRegister(collectors...)
+}
+
+// registerOrExisting registers a collector, returning the already-registered
+// collector when one with the same fully-qualified name and labels exists.
+//
+// Builders used MustRegister, so a duplicate metric name -- two components
+// declaring the same counter, or a package initialised twice in a test binary
+// -- crashed the process at startup. A name collision is a programming
+// mistake, but taking the service down for it is a poor trade when the
+// existing collector is exactly what the caller wanted.
+func (r *Registry) registerOrExisting(c prometheus.Collector) prometheus.Collector {
+	if err := r.registry.Register(c); err != nil {
+		var already prometheus.AlreadyRegisteredError
+		if errors.As(err, &already) {
+			return already.ExistingCollector
+		}
+		panic(err)
+	}
+	return c
 }
 
 // Unregister removes a collector from the registry.

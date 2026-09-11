@@ -17,8 +17,11 @@ func SanitizeLabelValue(s string, maxLen int) string {
 	if s == "" {
 		return s
 	}
-	// Replace characters that break Prometheus text format or could inject extra lines
+	// Replace characters that break the Prometheus text format or could inject
+	// extra lines. A label value is written as name="value", so the quote
+	// matters as much as the backslash and the newline did.
 	s = strings.ReplaceAll(s, "\\", "_")
+	s = strings.ReplaceAll(s, "\"", "_")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.TrimSpace(s)
@@ -35,7 +38,13 @@ func SanitizeLabelValue(s string, maxLen int) string {
 
 // pathSegmentID matches a single path segment that looks like a numeric ID or UUID.
 // Used by DefaultPathNormalize to reduce label cardinality.
-var pathSegmentID = regexp.MustCompile(`^(\d+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{24,})$`)
+var pathSegmentID = regexp.MustCompile(`^(` +
+	`\d+` + // numeric ids
+	`|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}` + // UUID
+	`|[0-9a-fA-F]{16,}` + // hex ids: 16 covers a 64-bit id, which the previous 24 floor missed
+	`|[0-9A-HJKMNP-TV-Z]{26}` + // ULID / Crockford base32
+	`|[A-Za-z0-9_-]{21,22}` + // nanoid, and base64url-encoded 16-byte tokens
+	`)$`)
 
 // DefaultPathNormalize normalizes request paths for use as metric labels to avoid cardinality explosion.
 // It replaces numeric and UUID-like path segments with ":id", e.g. /users/123 -> /users/:id,

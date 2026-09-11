@@ -141,10 +141,16 @@ func (m *HTTPMetrics) FiberMiddleware(cfg HTTPMetricsConfig) fiber.Handler {
 			return c.Next()
 		}
 
-		// Transform path if a transform function is provided (e.g. normalize /users/123 -> /users/:id)
-		if cfg.PathTransformFunc != nil {
-			path = cfg.PathTransformFunc(path)
+		// Normalise the path. A nil transform means the raw URL path becomes a
+		// label value, and an attacker requesting random URLs then mints a new
+		// time series per request. DefaultMiddlewareConfig sets this, but a
+		// config built as a struct literal leaves it nil -- so the default is
+		// applied here rather than assumed.
+		transform := cfg.PathTransformFunc
+		if transform == nil {
+			transform = DefaultPathNormalize
 		}
+		path = transform(path)
 		path = SanitizeLabelValue(path, DefaultLabelValueMaxLength)
 		method := SanitizeLabelValue(c.Method(), DefaultLabelValueMaxLength)
 
@@ -156,7 +162,15 @@ func (m *HTTPMetrics) FiberMiddleware(cfg HTTPMetricsConfig) fiber.Handler {
 
 		// Record request size
 		if m.RequestSize != nil {
-			m.RequestSize.WithLabelValues(method, path).Observe(float64(len(c.Body())))
+			// Content-Length rather than len(c.Body()): reading the body here
+			// materialises it in full for every request, including ones the
+			// handler streams or never reads, and runs before any body-size
+			// limit further down the chain.
+			size := c.Request().Header.ContentLength()
+			if size < 0 {
+				size = 0
+			}
+			m.RequestSize.WithLabelValues(method, path).Observe(float64(size))
 		}
 
 		start := time.Now()
