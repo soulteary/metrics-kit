@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -81,5 +82,124 @@ func TestSanitizeLabelValueEscapesQuotes(t *testing.T) {
 	long := strings.Repeat("é", 500)
 	if got := SanitizeLabelValue(long, 10); len([]rune(got)) != 10 {
 		t.Errorf("truncated to %d runes, want 10", len([]rune(got)))
+	}
+}
+
+// --- Codex review follow-ups (PR #4) ---
+
+// TestDuplicateHistogramWithDifferentBucketsIsReported is the regression test
+// for AlreadyRegisteredError reuse. Bucket boundaries are not part of a
+// Prometheus descriptor, so two components declaring the same histogram name,
+// help and labels with different buckets are duplicates -- and handing back the
+// first silently aggregated the second's observations into a layout it never
+// asked for.
+func TestDuplicateHistogramWithDifferentBucketsIsReported(t *testing.T) {
+	r := NewRegistry("app")
+
+	build := func(buckets []float64) {
+		r.Histogram("latency_seconds").
+			Help("Request latency").
+			Labels("route").
+			Buckets(buckets).
+			BuildVec()
+	}
+
+	build([]float64{0.1, 0.5, 1})
+
+	// The identical registration is still reused, not a panic.
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Errorf("re-registering an identical histogram panicked: %v", rec)
+			}
+		}()
+		build([]float64{0.1, 0.5, 1})
+	}()
+
+	// A different layout is a configuration conflict.
+	func() {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				t.Fatal("re-registering with different buckets was silently accepted; the second component's buckets are discarded")
+			}
+			if msg := fmt.Sprint(rec); !strings.Contains(msg, "different configuration") {
+				t.Errorf("panic message = %q, want it to name the configuration conflict", msg)
+			}
+		}()
+		build([]float64{1, 2, 3})
+	}()
+}
+
+// TestDuplicateSummaryWithDifferentObjectivesIsReported: summaries have the
+// analogous problem -- objectives are not part of the descriptor either.
+func TestDuplicateSummaryWithDifferentObjectivesIsReported(t *testing.T) {
+	r := NewRegistry("app")
+
+	build := func(objectives map[float64]float64) {
+		r.Summary("size_bytes").Help("Response size").Objectives(objectives).Build()
+	}
+
+	build(map[float64]float64{0.5: 0.05, 0.9: 0.01})
+
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Error("re-registering with different objectives was silently accepted")
+		}
+	}()
+	build(map[float64]float64{0.99: 0.001})
+}
+
+// TestNilPathTransformHasAnExplicitOptOut is the regression test for nil
+// PathTransformFunc having to mean two things at once. Nil now means the safe
+// default; raw paths are spelled DisablePathNormalization.
+func TestNilPathTransformHasAnExplicitOptOut(t *testing.T) {
+	cfg := DefaultHTTPMetricsConfig()
+	cfg.PathTransformFunc = nil
+	if got, want := cfg.transformPath("/users/123"), "/users/:id"; got != want {
+		t.Errorf("nil transform gave %q, want %q (the safe default)", got, want)
+	}
+
+	cfg.DisablePathNormalization = true
+	if got, want := cfg.transformPath("/users/123"), "/users/123"; got != want {
+		t.Errorf("DisablePathNormalization gave %q, want the raw %q", got, want)
+	}
+
+	// A custom function still wins over the default.
+	cfg = DefaultHTTPMetricsConfig()
+	cfg.PathTransformFunc = func(string) string { return "/fixed" }
+	if got := cfg.transformPath("/users/123"); got != "/fixed" {
+		t.Errorf("custom transform gave %q, want /fixed", got)
+	}
+}
+
+// TestStaticRoutesAreNotMistakenForTokens is the regression test for the nanoid
+// heuristic matching on length alone: "/forgot-password-reset" is exactly 21
+// URL-safe characters, and normalising it to /:id merges an unrelated static
+// route into the id bucket, corrupting its request counts and latencies.
+func TestStaticRoutesAreNotMistakenForTokens(t *testing.T) {
+	static := []string{
+		"/forgot-password-reset",
+		"/account/email-verification",
+		"/subscription-management",
+		"/api/password_reset_token",
+	}
+	for _, p := range static {
+		if got := DefaultPathNormalize(p); got != p {
+			t.Errorf("DefaultPathNormalize(%q) = %q, want it unchanged -- a static route is not an id", p, got)
+		}
+	}
+
+	// Real generated tokens are still normalised.
+	tokens := map[string]string{
+		"/s/V1StGXR8_Z5jdHi6B-myT":                    "/s/:id",
+		"/t/Uakgb1J5m9AI0EoMlqbP7":                    "/t/:id",
+		"/users/123":                                  "/users/:id",
+		"/items/550e8400-e29b-41d4-a716-446655440000": "/items/:id",
+	}
+	for in, want := range tokens {
+		if got := DefaultPathNormalize(in); got != want {
+			t.Errorf("DefaultPathNormalize(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

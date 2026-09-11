@@ -4,6 +4,10 @@ package metrics
 
 import (
 	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -21,8 +25,14 @@ type Registry struct {
 	// subsystem is an optional subsystem name (e.g., "otp", "auth", "cache")
 	subsystem string
 
-	// mu protects concurrent access to collectors map
+	// mu protects concurrent access to the collectors and shapes maps
 	mu sync.RWMutex
+
+	// shapes records, per metric id, the configuration Prometheus does not
+	// treat as part of a collector's identity -- histogram buckets and
+	// summary objectives -- so a second registration asking for a different
+	// one is reported instead of silently reusing the first.
+	shapes map[string]string
 
 	// collectors tracks registered collectors for Reset/Unregister
 	collectors map[string]prometheus.Collector
@@ -35,6 +45,7 @@ func NewRegistry(namespace string) *Registry {
 		registry:   prometheus.NewRegistry(),
 		namespace:  namespace,
 		collectors: make(map[string]prometheus.Collector),
+		shapes:     make(map[string]string),
 	}
 }
 
@@ -45,6 +56,7 @@ func NewRegistryWithSubsystem(namespace, subsystem string) *Registry {
 		namespace:  namespace,
 		subsystem:  subsystem,
 		collectors: make(map[string]prometheus.Collector),
+		shapes:     make(map[string]string),
 	}
 }
 
@@ -54,6 +66,7 @@ func DefaultRegistry() *Registry {
 		registry:   prometheus.DefaultRegisterer.(*prometheus.Registry),
 		namespace:  "",
 		collectors: make(map[string]prometheus.Collector),
+		shapes:     make(map[string]string),
 	}
 }
 
@@ -75,6 +88,10 @@ func (r *Registry) WithSubsystem(subsystem string) *Registry {
 		namespace:  r.namespace,
 		subsystem:  subsystem,
 		collectors: r.collectors,
+		// Shared, like collectors: a derived registry writes into the SAME
+		// prometheus.Registry, so its configuration conflicts are the parent's
+		// conflicts too.
+		shapes: r.shapes,
 	}
 }
 
@@ -105,7 +122,35 @@ func (r *Registry) MustRegister(collectors ...prometheus.Collector) {
 // -- crashed the process at startup. A name collision is a programming
 // mistake, but taking the service down for it is a poor trade when the
 // existing collector is exactly what the caller wanted.
-func (r *Registry) registerOrExisting(c prometheus.Collector) prometheus.Collector {
+//
+// id identifies the metric and shape fingerprints the configuration that
+// Prometheus does NOT consider part of a collector's identity: histogram
+// bucket boundaries and summary objectives. Two registrations agreeing on
+// name, help and labels but differing there are duplicates as far as
+// Prometheus is concerned, so handing back the first would silently discard
+// the second caller's configuration and aggregate its observations into a
+// layout it never asked for. Reuse is therefore limited to collectors whose
+// complete configuration matches; a genuine conflict is reported rather than
+// hidden. shape is empty for counters and gauges, which carry no such
+// configuration.
+func (r *Registry) registerOrExisting(c prometheus.Collector, id, shape string) prometheus.Collector {
+	if shape != "" {
+		r.mu.Lock()
+		if r.shapes == nil {
+			r.shapes = make(map[string]string)
+		}
+		if previous, ok := r.shapes[id]; ok && previous != shape {
+			r.mu.Unlock()
+			panic(fmt.Sprintf(
+				"metrics: %q is already registered with a different configuration.\n"+
+					"  registered: %s\n  requested:  %s\n"+
+					"Prometheus treats these as the same collector, so reusing it would record "+
+					"observations into a layout this caller did not ask for.", id, previous, shape))
+		}
+		r.shapes[id] = shape
+		r.mu.Unlock()
+	}
+
 	if err := r.registry.Register(c); err != nil {
 		var already prometheus.AlreadyRegisteredError
 		if errors.As(err, &already) {
@@ -114,6 +159,41 @@ func (r *Registry) registerOrExisting(c prometheus.Collector) prometheus.Collect
 		panic(err)
 	}
 	return c
+}
+
+// metricID is the identity registerOrExisting keys its shape records by.
+func (r *Registry) metricID(name string, labels []string) string {
+	return prometheus.BuildFQName(r.namespace, r.subsystem, name) + "{" + strings.Join(labels, ",") + "}"
+}
+
+// bucketShape fingerprints histogram bucket boundaries.
+func bucketShape(buckets []float64) string {
+	if len(buckets) == 0 {
+		return "buckets=default"
+	}
+	parts := make([]string, len(buckets))
+	for i, b := range buckets {
+		parts[i] = strconv.FormatFloat(b, 'g', -1, 64)
+	}
+	return "buckets=[" + strings.Join(parts, ",") + "]"
+}
+
+// objectiveShape fingerprints summary objectives.
+func objectiveShape(objectives map[float64]float64) string {
+	if len(objectives) == 0 {
+		return "objectives=default"
+	}
+	quantiles := make([]float64, 0, len(objectives))
+	for q := range objectives {
+		quantiles = append(quantiles, q)
+	}
+	sort.Float64s(quantiles)
+
+	parts := make([]string, len(quantiles))
+	for i, q := range quantiles {
+		parts[i] = strconv.FormatFloat(q, 'g', -1, 64) + ":" + strconv.FormatFloat(objectives[q], 'g', -1, 64)
+	}
+	return "objectives={" + strings.Join(parts, ",") + "}"
 }
 
 // Unregister removes a collector from the registry.

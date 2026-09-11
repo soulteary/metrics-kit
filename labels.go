@@ -43,8 +43,37 @@ var pathSegmentID = regexp.MustCompile(`^(` +
 	`|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}` + // UUID
 	`|[0-9a-fA-F]{16,}` + // hex ids: 16 covers a 64-bit id, which the previous 24 floor missed
 	`|[0-9A-HJKMNP-TV-Z]{26}` + // ULID / Crockford base32
-	`|[A-Za-z0-9_-]{21,22}` + // nanoid, and base64url-encoded 16-byte tokens
 	`)$`)
+
+// pathSegmentToken matches a 21- or 22-character URL-safe segment -- the shape
+// of a nanoid or a base64url-encoded 16-byte token.
+//
+// Length alone is not a discriminator: /forgot-password-reset is exactly 21
+// URL-safe characters, and normalising a static route to /:id merges it with
+// unrelated endpoints and corrupts their request counts and latencies. A
+// generated token over this alphabet practically always mixes character
+// classes, so at least one digit AND one uppercase letter are required. The
+// trade is deliberate: missing a token costs one extra series, while a false
+// positive silently merges real routes.
+var pathSegmentToken = regexp.MustCompile(`^[A-Za-z0-9_-]{21,22}$`)
+
+// looksLikeGeneratedToken reports whether seg has the shape of a generated
+// URL-safe identifier rather than a hyphenated word.
+func looksLikeGeneratedToken(seg string) bool {
+	if !pathSegmentToken.MatchString(seg) {
+		return false
+	}
+	var hasDigit, hasUpper bool
+	for _, r := range seg {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		}
+	}
+	return hasDigit && hasUpper
+}
 
 // DefaultPathNormalize normalizes request paths for use as metric labels to avoid cardinality explosion.
 // It replaces numeric and UUID-like path segments with ":id", e.g. /users/123 -> /users/:id,
@@ -56,7 +85,7 @@ func DefaultPathNormalize(path string) string {
 	}
 	segments := strings.Split(strings.Trim(path, "/"), "/")
 	for i, seg := range segments {
-		if pathSegmentID.MatchString(seg) {
+		if pathSegmentID.MatchString(seg) || looksLikeGeneratedToken(seg) {
 			segments[i] = ":id"
 		}
 	}

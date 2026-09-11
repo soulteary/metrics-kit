@@ -48,7 +48,20 @@ type HTTPMetricsConfig struct {
 
 	// PathTransformFunc transforms the request path before using it as a label.
 	// This is useful for normalizing paths with parameters (e.g., /users/123 -> /users/:id)
+	//
+	// Nil means DefaultPathNormalize. It used to mean "use the raw path", but
+	// a config built as a struct literal also leaves it nil, and a raw URL
+	// path as a label value lets anyone requesting random URLs mint a new time
+	// series per request. Use DisablePathNormalization to ask for raw paths.
 	PathTransformFunc func(path string) string
+
+	// DisablePathNormalization uses the raw request path as the label value.
+	//
+	// This is the explicit spelling of what PathTransformFunc: nil used to
+	// mean. Only safe where every path is already bounded -- a router that
+	// reports its route pattern rather than the request URL, say. Otherwise
+	// each distinct ID becomes its own time series.
+	DisablePathNormalization bool
 
 	// IncludeRequestSize enables request size tracking
 	IncludeRequestSize bool
@@ -61,8 +74,9 @@ type HTTPMetricsConfig struct {
 }
 
 // DefaultHTTPMetricsConfig returns the default configuration for HTTP metrics.
-// PathTransformFunc is set to DefaultPathNormalize to avoid label cardinality explosion in production;
-// override to nil or a custom function if you need raw paths or different normalization.
+// PathTransformFunc is set to DefaultPathNormalize to avoid label cardinality
+// explosion in production; set a custom function for different normalization,
+// or DisablePathNormalization for raw paths.
 func DefaultHTTPMetricsConfig() HTTPMetricsConfig {
 	return HTTPMetricsConfig{
 		Subsystem:               "http",
@@ -71,6 +85,23 @@ func DefaultHTTPMetricsConfig() HTTPMetricsConfig {
 		IncludeRequestsInFlight: true,
 		PathTransformFunc:       DefaultPathNormalize,
 	}
+}
+
+// transformPath applies the configured path normalization.
+//
+// A nil PathTransformFunc means DefaultPathNormalize. It cannot also mean
+// "raw path": a config built as a struct literal leaves the field nil without
+// intending anything by it, and a raw URL path as a label value lets anyone
+// requesting random URLs mint a new time series per request. Raw paths are
+// spelled DisablePathNormalization.
+func (c HTTPMetricsConfig) transformPath(path string) string {
+	if c.DisablePathNormalization {
+		return path
+	}
+	if c.PathTransformFunc != nil {
+		return c.PathTransformFunc(path)
+	}
+	return DefaultPathNormalize(path)
 }
 
 // NewHTTPMetrics creates a new HTTPMetrics with the given configuration.
@@ -141,16 +172,7 @@ func (m *HTTPMetrics) FiberMiddleware(cfg HTTPMetricsConfig) fiber.Handler {
 			return c.Next()
 		}
 
-		// Normalise the path. A nil transform means the raw URL path becomes a
-		// label value, and an attacker requesting random URLs then mints a new
-		// time series per request. DefaultMiddlewareConfig sets this, but a
-		// config built as a struct literal leaves it nil -- so the default is
-		// applied here rather than assumed.
-		transform := cfg.PathTransformFunc
-		if transform == nil {
-			transform = DefaultPathNormalize
-		}
-		path = transform(path)
+		path = cfg.transformPath(path)
 		path = SanitizeLabelValue(path, DefaultLabelValueMaxLength)
 		method := SanitizeLabelValue(c.Method(), DefaultLabelValueMaxLength)
 
@@ -166,11 +188,14 @@ func (m *HTTPMetrics) FiberMiddleware(cfg HTTPMetricsConfig) fiber.Handler {
 			// materialises it in full for every request, including ones the
 			// handler streams or never reads, and runs before any body-size
 			// limit further down the chain.
-			size := c.Request().Header.ContentLength()
-			if size < 0 {
-				size = 0
+			// A negative Content-Length means the length is UNKNOWN --
+			// a streamed or chunked upload. Recording it as zero increments
+			// the histogram count while contributing nothing to its sum and
+			// lowest bucket, systematically understating request sizes, so
+			// the observation is skipped instead.
+			if size := c.Request().Header.ContentLength(); size >= 0 {
+				m.RequestSize.WithLabelValues(method, path).Observe(float64(size))
 			}
-			m.RequestSize.WithLabelValues(method, path).Observe(float64(size))
 		}
 
 		start := time.Now()
