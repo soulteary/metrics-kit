@@ -42,7 +42,12 @@ var pathSegmentID = regexp.MustCompile(`^(` +
 	`\d+` + // numeric ids
 	`|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}` + // UUID
 	`|[0-9a-fA-F]{16,}` + // hex ids: 16 covers a 64-bit id, which the previous 24 floor missed
-	`|[0-7][0-9A-HJKMNP-TV-Z]{25}` + // ULID: 128 bits in 26 Crockford digits, so the first carries only 2
+	// ULID: 128 bits in 26 Crockford digits, so the first carries only 2 and
+	// can only be 0-7. Crockford is case-INSENSITIVE and libraries emit both,
+	// so either case is accepted -- but uniformly, since a mixed-case ULID is
+	// not something any encoder produces and allowing it would only widen the
+	// net. The alphabet excludes I, L, O and U.
+	`|[0-7](?:[0-9A-HJKMNP-TV-Z]{25}|[0-9a-hjkmnp-tv-z]{25})` +
 	`)$`)
 
 // pathSegmentToken matches a 21- or 22-character URL-safe segment -- the shape

@@ -208,16 +208,20 @@ func (r *Registry) WithSubsystem(subsystem string) *Registry {
 // Register registers a collector with the registry.
 // It tracks the collector for later unregistration.
 func (r *Registry) Register(name string, collector prometheus.Collector) error {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
+	// owned.mu ONLY, held across the registry call so this serialises against
+	// Unregister. It must NOT also take state.mu: Unregister holds owned.mu
+	// and then reaches state.mu through releaseShapes, so acquiring them in
+	// the opposite order here deadlocks the pair. Register touches no shape
+	// records, so it has no business holding that lock anyway -- it did only
+	// because state.mu used to guard the named-registration map too.
+	r.owned.mu.Lock()
+	defer r.owned.mu.Unlock()
 
 	if err := r.registry.Register(collector); err != nil {
 		return err
 	}
 
-	r.owned.mu.Lock()
 	r.owned.collectors[name] = collector
-	r.owned.mu.Unlock()
 	return nil
 }
 
@@ -456,9 +460,20 @@ func objectiveShape(objectives map[float64]float64) string {
 
 // Unregister removes a collector from the registry.
 func (r *Registry) Unregister(name string) bool {
+	// Held across the lookup, the registry call AND the map update. Dropping
+	// it in between let Register("x", c2) land after the lookup read c1, so
+	// the delete removed c2's entry while c2 stayed registered -- a later
+	// Unregister("x") then reported false for a collector that was still
+	// there. The registry-wide mutex used to serialise this; the per-wrapper
+	// one has to do the same job.
+	//
+	// Prometheus releases its own lock before returning, and never calls back
+	// into this package, so holding this one across r.registry.Unregister
+	// cannot invert a lock order with Register.
 	r.owned.mu.Lock()
+	defer r.owned.mu.Unlock()
+
 	collector, ok := r.owned.collectors[name]
-	r.owned.mu.Unlock()
 	if !ok {
 		return false
 	}
@@ -467,10 +482,7 @@ func (r *Registry) Unregister(name string) bool {
 		return false
 	}
 
-	r.owned.mu.Lock()
 	delete(r.owned.collectors, name)
-	r.owned.mu.Unlock()
-
 	r.releaseShapes(collector)
 	return true
 }
@@ -490,17 +502,19 @@ func (r *Registry) Unregister(name string) bool {
 // Unregistering straight through PrometheusRegistry() still leaves the record
 // behind: this package cannot observe that call.
 func (r *Registry) UnregisterCollector(c prometheus.Collector) bool {
+	// Same serialisation as Unregister, for the same reason.
+	r.owned.mu.Lock()
+	defer r.owned.mu.Unlock()
+
 	if !r.registry.Unregister(c) {
 		return false
 	}
 
-	r.owned.mu.Lock()
 	for name, tracked := range r.owned.collectors {
 		if sameCollector(tracked, c) {
 			delete(r.owned.collectors, name)
 		}
 	}
-	r.owned.mu.Unlock()
 
 	r.releaseShapes(c)
 	return true

@@ -285,7 +285,10 @@ func main() {
 
 ## 注册表与 Unregister
 
-- `Unregister(name)` 仅对通过 `Register(name, collector)` 注册的采集器生效。通过构建器 `Build()`/`BuildVec()` 创建的指标使用 `MustRegister` 注册且未按名称追踪；若要移除，需保留 collector 引用并调用底层 `registry.PrometheusRegistry().Unregister(collector)`。
+- `Unregister(name)` 仅对通过 `Register(name, collector)` 注册的采集器生效。通过构建器 `Build()`/`BuildVec()` 创建的指标不按名称追踪，`Unregister` 无法处理它们。
+- 移除构建器创建的采集器请保留其引用并调用 **`registry.UnregisterCollector(collector)`**。它在注销之外还会释放描述该采集器的 shape 记录——该记录强引用采集器，否则动态创建并移除大量唯一命名的向量会在注册表的整个生命周期内保留它们（连同其标签子项）。
+- 直接调用 `registry.PrometheusRegistry().Unregister(collector)` 仍然可行，但本包无法感知该调用，shape 记录会被遗留。请优先使用 `UnregisterCollector`。
+- 另外请注意：用**不同的标签名**重新注册同一指标名，无论如何都会在 Prometheus 内部 panic——`client_golang` 有意在整个进程生命周期内保留 `dimHashesByName`。
 
 ## 要求
 

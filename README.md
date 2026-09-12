@@ -285,7 +285,10 @@ func main() {
 
 ## Registry and Unregister
 
-- `Unregister(name)` only affects collectors that were registered with `Register(name, collector)`. Metrics created via the builders (`Build()` / `BuildVec()`) are registered with `MustRegister` and are not tracked by name; to remove them, keep the collector reference and call the underlying `registry.PrometheusRegistry().Unregister(collector)`.
+- `Unregister(name)` only affects collectors registered with `Register(name, collector)`. Metrics created via the builders (`Build()` / `BuildVec()`) are not tracked by name, so `Unregister` cannot reach them.
+- To remove a builder-created collector, keep its reference and call **`registry.UnregisterCollector(collector)`**. As well as unregistering it, this releases the shape record that describes it -- the record holds the collector strongly, so dynamically creating and removing uniquely named vectors otherwise retains every one of them, label children included, for the registry's lifetime.
+- Calling `registry.PrometheusRegistry().Unregister(collector)` directly still works, but this package cannot observe that call, so the shape record is left behind. Prefer `UnregisterCollector`.
+- Note that re-registering the same metric name with **different label names** panics inside Prometheus whatever you do: `client_golang` keeps its `dimHashesByName` for the life of the process on purpose.
 
 ## Requirements
 

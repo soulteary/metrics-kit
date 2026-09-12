@@ -1048,3 +1048,78 @@ func TestUnregisterReleasesShapeRecords(t *testing.T) {
 		t.Error("rebuilding after unregistration returned the departed collector")
 	}
 }
+
+// --- Codex review round 11 (PR #4) ---
+
+// TestUnregisterSerializesWithRegister is the regression test for splitting
+// the named-registration lock across the registry call.
+//
+// Unregister read the collector, released the lock, unregistered, then
+// re-acquired and deleted unconditionally -- so a Register("x", c2) landing in
+// that window had its entry removed while c2 stayed registered, and a later
+// Unregister("x") reported false for a collector that was still there. The
+// registry-wide mutex used to serialise this.
+func TestUnregisterSerializesWithRegister(t *testing.T) {
+	for attempt := 0; attempt < 200; attempt++ {
+		r := NewRegistry("")
+		c1 := prometheus.NewCounter(prometheus.CounterOpts{Name: "zz_race_one", Help: "h"})
+		c2 := prometheus.NewCounter(prometheus.CounterOpts{Name: "zz_race_two", Help: "h"})
+		if err := r.Register("x", c1); err != nil {
+			t.Fatal(err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		var removed bool
+		go func() { defer wg.Done(); removed = r.Unregister("x") }()
+		go func() { defer wg.Done(); _ = r.Register("x", c2) }()
+		wg.Wait()
+
+		// Whatever the interleaving, the ownership map must agree with the
+		// underlying registry: if "x" is absent here, nothing it named may
+		// still be registered.
+		r.owned.mu.Lock()
+		tracked, ok := r.owned.collectors["x"]
+		r.owned.mu.Unlock()
+
+		if !ok {
+			if r.PrometheusRegistry().Unregister(c2) {
+				t.Fatalf("attempt %d: c2 stayed registered with no ownership entry (Unregister returned %v)", attempt, removed)
+			}
+			continue
+		}
+		if !sameCollector(tracked, c1) && !sameCollector(tracked, c2) {
+			t.Fatalf("attempt %d: ownership entry is neither collector", attempt)
+		}
+	}
+}
+
+// TestULIDPatternAcceptsEitherCase: Crockford base32 is case-insensitive and
+// libraries emit both, so a lowercase ULID must normalize too -- otherwise
+// every lowercase id gets its own path-label series, which is the cardinality
+// explosion the function exists to prevent.
+func TestULIDPatternAcceptsEitherCase(t *testing.T) {
+	for _, id := range []string{
+		"01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		"01arz3ndektsv4rrffq69g5fav",
+		"7zzzzzzzzzzzzzzzzzzzzzzzzz",
+	} {
+		t.Run(id, func(t *testing.T) {
+			if got := DefaultPathNormalize("/events/" + id); got != "/events/:id" {
+				t.Errorf("DefaultPathNormalize(/events/%s) = %q, want /events/:id", id, got)
+			}
+		})
+	}
+
+	// The leading-digit constraint still applies in both cases.
+	for _, path := range []string{
+		"/PAYMENTCARDRESETCHECKPAGES",
+		"/paymentcardresetcheckpages",
+	} {
+		t.Run(path, func(t *testing.T) {
+			if got := DefaultPathNormalize(path); got != path {
+				t.Errorf("DefaultPathNormalize(%q) = %q, want it left alone", path, got)
+			}
+		})
+	}
+}
