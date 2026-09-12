@@ -3,7 +3,16 @@
 package metrics
 
 import (
+	"errors"
+	"fmt"
+	"math"
+	"reflect"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
+	"weak"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -20,39 +29,153 @@ type Registry struct {
 	// subsystem is an optional subsystem name (e.g., "otp", "auth", "cache")
 	subsystem string
 
-	// mu protects concurrent access to collectors map
+	// state is the SHAPE state, shared by every wrapper over one underlying
+	// registry -- shapes describe what is registered there, so two wrappers
+	// must see each other's.
+	state *registryState
+
+	// owned is the named-registration state of THIS wrapper and the
+	// WithSubsystem views derived from it, and of nothing else. Register and
+	// Unregister are per-wrapper ownership: two independently obtained
+	// DefaultRegistry() wrappers that share one map overwrite each other's
+	// entries, and then one wrapper's Unregister removes the OTHER's
+	// collector while leaving its own registered.
+	owned *ownedCollectors
+}
+
+// ownedCollectors tracks the collectors one wrapper lineage registered by name.
+type ownedCollectors struct {
+	mu         sync.Mutex
+	collectors map[string]prometheus.Collector
+}
+
+func newOwnedCollectors() *ownedCollectors {
+	return &ownedCollectors{collectors: make(map[string]prometheus.Collector)}
+}
+
+// registryState is the mutable state a Registry shares with the views derived
+// from it.
+//
+// It lives behind a POINTER so a derived Registry shares the mutex along with
+// the maps. WithSubsystem used to copy the Registry struct, giving each view
+// its own zero-value mutex while the maps stayed shared -- two views writing
+// concurrently, even in different subsystems, then raced on those maps and
+// could kill the process with "concurrent map writes".
+type registryState struct {
 	mu sync.RWMutex
 
-	// collectors tracks registered collectors for Reset/Unregister
-	collectors map[string]prometheus.Collector
+	// shapes records, per metric id, the configuration Prometheus does not
+	// treat as part of a collector's identity -- the collector KIND, label
+	// ORDER, histogram buckets, summary objectives -- so a second
+	// registration asking for a different one is reported instead of
+	// silently reusing the first.
+	shapes map[string]shapeRecord
+}
+
+// shapeRecord is a fingerprint together with the collector it describes.
+//
+// The owner matters because a descriptor can change hands without this
+// package noticing: register through a builder, Unregister that collector,
+// then raw-register an external one with the same descriptor and different
+// buckets. The next builder request gets AlreadyRegisteredError naming the
+// EXTERNAL collector, while the recorded shape still describes the departed
+// one -- so a matching fingerprint would hand back the incompatible external
+// collector as verified.
+type shapeRecord struct {
+	shape string
+	owner prometheus.Collector
+}
+
+// newRegistryState allocates state for a registry this package owns.
+func newRegistryState() *registryState {
+	return &registryState{shapes: make(map[string]shapeRecord)}
+}
+
+// shapeStores maps a registry this package does NOT own to its shape records.
+//
+// Shape knowledge has to follow the REGISTRY, not the wrapper: two wrappers
+// over one registry both register into the same place, so a shape recorded
+// through one must be visible to the other. Keeping it per-wrapper left the
+// second wrapper with no prior entry, so it recorded its own shape, got
+// AlreadyRegisteredError, and handed back the incompatible existing collector.
+//
+// Only stateFor's callers need the lookup, and the only one is
+// DefaultRegistry: NewRegistry and NewRegistryWithSubsystem mint a registry
+// nobody else can be wrapping, so they allocate state directly. Routing those
+// through here instead added a permanent entry -- keyed by the registry, which
+// retains its collectors -- for every registry a test, a reload or a repeated
+// middleware construction ever created, and nothing removed them.
+// Keyed WEAKLY. prometheus.DefaultRegisterer is an exported mutable global and
+// is routinely replaced -- per-test isolation, reinitialisation -- so a strong
+// key made every registry the global ever held permanently reachable, along
+// with every collector in it. Restoring or replacing the global freed nothing
+// and repeated replacement grew without bound.
+//
+// A weak key lets a registry nobody else holds be collected, and keeps its
+// state for exactly as long as the registry itself lives -- so swapping the
+// global away and back preserves the shapes recorded for the original, which
+// a single-slot cache would have discarded.
+var shapeStores sync.Map // weak.Pointer[prometheus.Registry] -> *registryState
+
+// stateFor returns the shared state for a registry owned elsewhere, creating
+// it on first use.
+func stateFor(reg *prometheus.Registry) *registryState {
+	key := weak.Make(reg)
+	if existing, ok := shapeStores.Load(key); ok {
+		return existing.(*registryState)
+	}
+
+	// Only on the miss path: the hit path is every metric build.
+	pruneCollectedShapeStores()
+
+	actual, _ := shapeStores.LoadOrStore(key, newRegistryState())
+	return actual.(*registryState)
+}
+
+// pruneCollectedShapeStores drops the entries of registries that have been
+// garbage collected. Without it the weak keys themselves would accumulate --
+// smaller than the registries they used to retain, but still unbounded.
+func pruneCollectedShapeStores() {
+	shapeStores.Range(func(key, _ any) bool {
+		if key.(weak.Pointer[prometheus.Registry]).Value() == nil {
+			shapeStores.Delete(key)
+		}
+		return true
+	})
 }
 
 // NewRegistry creates a new Registry with the given namespace.
 // The namespace is typically the service name (e.g., "herald", "stargate").
 func NewRegistry(namespace string) *Registry {
 	return &Registry{
-		registry:   prometheus.NewRegistry(),
-		namespace:  namespace,
-		collectors: make(map[string]prometheus.Collector),
+		registry:  prometheus.NewRegistry(),
+		namespace: namespace,
+		state:     newRegistryState(),
+		owned:     newOwnedCollectors(),
 	}
 }
 
 // NewRegistryWithSubsystem creates a new Registry with namespace and subsystem.
 func NewRegistryWithSubsystem(namespace, subsystem string) *Registry {
 	return &Registry{
-		registry:   prometheus.NewRegistry(),
-		namespace:  namespace,
-		subsystem:  subsystem,
-		collectors: make(map[string]prometheus.Collector),
+		registry:  prometheus.NewRegistry(),
+		namespace: namespace,
+		subsystem: subsystem,
+		state:     newRegistryState(),
+		owned:     newOwnedCollectors(),
 	}
 }
 
 // DefaultRegistry returns a Registry wrapping the default Prometheus registry.
 func DefaultRegistry() *Registry {
+	reg := prometheus.DefaultRegisterer.(*prometheus.Registry)
 	return &Registry{
-		registry:   prometheus.DefaultRegisterer.(*prometheus.Registry),
-		namespace:  "",
-		collectors: make(map[string]prometheus.Collector),
+		registry:  reg,
+		namespace: "",
+		state:     stateFor(reg),
+		// A FRESH owned map: two DefaultRegistry() calls are separate
+		// wrappers and must not share named registrations.
+		owned: newOwnedCollectors(),
 	}
 }
 
@@ -70,24 +193,35 @@ func (r *Registry) Subsystem() string {
 // but a different subsystem.
 func (r *Registry) WithSubsystem(subsystem string) *Registry {
 	return &Registry{
-		registry:   r.registry,
-		namespace:  r.namespace,
-		subsystem:  subsystem,
-		collectors: r.collectors,
+		registry:  r.registry,
+		namespace: r.namespace,
+		subsystem: subsystem,
+		// Both, mutexes included: a derived registry writes into the SAME
+		// prometheus.Registry, and a WithSubsystem view is the same wrapper
+		// seen through a different prefix -- so its named registrations
+		// belong to the same owner, unlike a separately obtained wrapper.
+		state: r.state,
+		owned: r.owned,
 	}
 }
 
 // Register registers a collector with the registry.
 // It tracks the collector for later unregistration.
 func (r *Registry) Register(name string, collector prometheus.Collector) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// owned.mu ONLY, held across the registry call so this serialises against
+	// Unregister. It must NOT also take state.mu: Unregister holds owned.mu
+	// and then reaches state.mu through releaseShapes, so acquiring them in
+	// the opposite order here deadlocks the pair. Register touches no shape
+	// records, so it has no business holding that lock anyway -- it did only
+	// because state.mu used to guard the named-registration map too.
+	r.owned.mu.Lock()
+	defer r.owned.mu.Unlock()
 
 	if err := r.registry.Register(collector); err != nil {
 		return err
 	}
 
-	r.collectors[name] = collector
+	r.owned.collectors[name] = collector
 	return nil
 }
 
@@ -96,21 +230,311 @@ func (r *Registry) MustRegister(collectors ...prometheus.Collector) {
 	r.registry.MustRegister(collectors...)
 }
 
+// registerOrExisting registers a collector, returning the already-registered
+// collector when one with the same fully-qualified name and labels exists.
+//
+// Builders used MustRegister, so a duplicate metric name -- two components
+// declaring the same counter, or a package initialised twice in a test binary
+// -- crashed the process at startup. A name collision is a programming
+// mistake, but taking the service down for it is a poor trade when the
+// existing collector is exactly what the caller wanted.
+//
+// id identifies the metric and shape fingerprints the configuration that
+// Prometheus does NOT consider part of a collector's identity: histogram
+// bucket boundaries and summary objectives. Two registrations agreeing on
+// name, help and labels but differing there are duplicates as far as
+// Prometheus is concerned, so handing back the first would silently discard
+// the second caller's configuration and aggregate its observations into a
+// layout it never asked for. Reuse is therefore limited to collectors whose
+// complete configuration matches; a genuine conflict is reported rather than
+// hidden. shape is empty for counters and gauges, which carry no such
+// configuration.
+func (r *Registry) registerOrExisting(c prometheus.Collector, id, shape string) prometheus.Collector {
+	// The lock spans the registration. Prometheus decides who owns the
+	// descriptor, and only the winner may record its shape; publishing the
+	// shape first and registering afterwards got both halves wrong.
+	//
+	// Two goroutines building the same NEW metric both recorded a shape, then
+	// one lost Register -- and, having seen no prior entry, read its own
+	// AlreadyRegisteredError as "registered outside this package" and panicked
+	// on a collector this package had just created. And after a genuine
+	// external-collector panic the rejected shape stayed behind, so retrying
+	// the same build found it "known", matched it against itself, and returned
+	// the incompatible external collector the panic existed to refuse.
+	//
+	// Taking r.state.mu around r.registry.Register cannot deadlock: the
+	// Prometheus registry's own lock is only ever taken while holding this
+	// one, never the other way round.
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+
+	if r.state.shapes == nil {
+		r.state.shapes = make(map[string]shapeRecord)
+	}
+
+	if err := r.registry.Register(c); err != nil {
+		var already prometheus.AlreadyRegisteredError
+		if errors.As(err, &already) {
+			record, known := r.state.shapes[id]
+			if known && !sameCollector(record.owner, already.ExistingCollector) {
+				// The descriptor changed hands. Whatever is registered now is
+				// not what this record describes, so its shape proves nothing.
+				known = false
+			}
+			if !known {
+				// Prometheus says this descriptor is taken, but nothing
+				// recorded its shape -- it was registered outside the
+				// builders, through MustRegister or a raw Registerer. The
+				// existing collector's buckets, objectives and label order
+				// cannot be read back through the Prometheus API, so
+				// compatibility is unverifiable. Returning it anyway is how
+				// the mismatch this check exists to catch slips through.
+				panic(shapeConflict(id, "unknown (registered outside this package)", shape))
+			}
+			if record.shape != shape {
+				panic(shapeConflict(id, record.shape, shape))
+			}
+			return already.ExistingCollector
+		}
+		panic(err)
+	}
+
+	// Registration succeeded, so the descriptor was free. Any shape still
+	// recorded for this id described a collector that is no longer registered
+	// -- the caller reached PrometheusRegistry().Unregister -- and Prometheus
+	// accepts a different layout after that, so replace it rather than
+	// reporting a conflict with a collector that has gone.
+	r.state.shapes[id] = shapeRecord{shape: shape, owner: c}
+	return c
+}
+
+// sameCollector reports whether a and b are the same collector instance.
+//
+// By pointer identity rather than ==, which panics on an interface holding a
+// non-comparable value and a caller may well register one. Anything not
+// comparable this way is reported as NOT the same, which fails closed: the
+// recorded shape is then treated as unknown and the reuse refused.
+func sameCollector(a, b prometheus.Collector) bool {
+	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+	if av.Kind() != reflect.Pointer || bv.Kind() != reflect.Pointer {
+		return false
+	}
+	return av.Pointer() == bv.Pointer()
+}
+
+// shapeConflict is the panic message for an incompatible re-registration.
+func shapeConflict(id, previous, requested string) string {
+	return fmt.Sprintf(
+		"metrics: %q is already registered with a different configuration.\n"+
+			"  registered: %s\n  requested:  %s\n"+
+			"Prometheus treats these as the same collector, so reusing it would record "+
+			"observations into a layout this caller did not ask for.", id, previous, requested)
+}
+
+// metricID is the identity registerOrExisting keys its shape records by.
+//
+// It mirrors what Prometheus treats as a descriptor's identity: the
+// fully-qualified name, the variable label NAME SET, and the constant labels.
+//
+// Labels are SORTED, because a Prometheus descriptor's identity is the label
+// NAME SET, not its order: Labels("method","path") and Labels("path","method")
+// collide. Sorting here makes them share an id so the differing order shows up
+// as a shape conflict; keying on the given order instead hid it, and
+// AlreadyRegisteredError then handed back the first vector, silently swapping
+// the two label values in the second caller's WithLabelValues calls.
+func (r *Registry) metricID(name string, labels []string, constLabels prometheus.Labels) string {
+	sorted := append([]string(nil), labels...)
+	sort.Strings(sorted)
+	return prometheus.BuildFQName(r.namespace, r.subsystem, name) +
+		"{" + strings.Join(sorted, ",") + "}" + constLabelID(constLabels)
+}
+
+// constLabelID renders the constant labels, which ARE part of a descriptor's
+// identity: Prometheus registers two collectors that differ only there side by
+// side. Leaving them out of the id filed both under one shape record, so a
+// perfectly valid pair of histograms -- same name and variable labels, one per
+// const-label value -- panicked as a conflict the moment their buckets
+// differed, before Prometheus ever saw the second registration.
+func constLabelID(constLabels prometheus.Labels) string {
+	if len(constLabels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(constLabels))
+	for k := range constLabels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + strconv.Quote(constLabels[k])
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// kindShape fingerprints the collector kind AND its form.
+//
+// Prometheus does not distinguish kinds in a descriptor, and Go's interfaces
+// do not distinguish them either: a gauge structurally implements Inc and Add,
+// so prometheus.Counter accepts one, and a summary implements Observe, so
+// prometheus.Histogram accepts one. Reusing across kinds therefore type-
+// asserted cleanly and handed back the wrong instrument -- a gauge exported
+// as a counter, accepting negative Add calls.
+//
+// Scalar and vector are separate kinds here ("counter" vs "counter_vec"),
+// because Build() and BuildVec() with no labels produce the same metric id
+// AND the same label shape. The second registration was handed the first
+// collector, and THAT assertion does fail -- a prometheus.Counter is not a
+// *prometheus.CounterVec -- so the reuse this whole mechanism exists to make
+// safe reintroduced the startup panic it was meant to remove. Now it is
+// reported as the configuration conflict it is.
+func kindShape(kind string) string {
+	return "kind=" + kind + ";"
+}
+
+// labelShape fingerprints the label ORDER, which the id deliberately discards.
+func labelShape(labels []string) string {
+	return "labels=[" + strings.Join(labels, ",") + "]"
+}
+
+// bucketShape fingerprints histogram bucket boundaries.
+//
+// Nil, empty and an explicit prometheus.DefBuckets all mean the same layout --
+// Prometheus substitutes DefBuckets for nil -- so they must produce the same
+// fingerprint. Histogram() seeds b.buckets with DefBuckets while .Buckets(nil)
+// leaves it empty, and treating those as different made a perfectly valid
+// second registration panic as a conflict.
+func bucketShape(buckets []float64) string {
+	if len(buckets) == 0 {
+		return "buckets=default"
+	}
+	// A terminal +Inf is implicit: Prometheus appends that bucket itself and
+	// strips a supplied one, so a declaration carrying it and one omitting it
+	// are the same histogram -- and reporting them as a conflict rejected a
+	// perfectly valid second registration.
+	//
+	// Stripped AFTER the empty check, never before: []float64{+Inf} is not an
+	// empty slice to Prometheus either. Empty means DefBuckets; a lone +Inf
+	// means no finite bounds at all, which is a different histogram.
+	if math.IsInf(buckets[len(buckets)-1], +1) {
+		buckets = buckets[:len(buckets)-1]
+	}
+	if slices.Equal(buckets, prometheus.DefBuckets) {
+		return "buckets=default"
+	}
+	parts := make([]string, len(buckets))
+	for i, b := range buckets {
+		parts[i] = strconv.FormatFloat(b, 'g', -1, 64)
+	}
+	return "buckets=[" + strings.Join(parts, ",") + "]"
+}
+
+// objectiveShape fingerprints summary objectives.
+//
+// No canonicalisation here, deliberately, and NOT by analogy with
+// bucketShape. Empty buckets really are prometheus.DefBuckets -- the package
+// declares that variable and newHistogram assigns it -- so the two spellings
+// build the same histogram and must fingerprint alike. Summaries are the
+// opposite: client_golang has no DefObjectives any more, and empty objectives
+// build a noObjectivesSummary, a summary carrying NO quantiles. That is a
+// different layout from any explicit quantile map, so collapsing them would
+// let two genuinely different summaries pass the conflict check.
+//
+// Hence "none" rather than "default": the empty case is an absence of
+// quantiles, not a default set of them.
+func objectiveShape(objectives map[float64]float64) string {
+	if len(objectives) == 0 {
+		return "objectives=none"
+	}
+	quantiles := make([]float64, 0, len(objectives))
+	for q := range objectives {
+		quantiles = append(quantiles, q)
+	}
+	sort.Float64s(quantiles)
+
+	parts := make([]string, len(quantiles))
+	for i, q := range quantiles {
+		parts[i] = strconv.FormatFloat(q, 'g', -1, 64) + ":" + strconv.FormatFloat(objectives[q], 'g', -1, 64)
+	}
+	return "objectives={" + strings.Join(parts, ",") + "}"
+}
+
 // Unregister removes a collector from the registry.
 func (r *Registry) Unregister(name string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// Held across the lookup, the registry call AND the map update. Dropping
+	// it in between let Register("x", c2) land after the lookup read c1, so
+	// the delete removed c2's entry while c2 stayed registered -- a later
+	// Unregister("x") then reported false for a collector that was still
+	// there. The registry-wide mutex used to serialise this; the per-wrapper
+	// one has to do the same job.
+	//
+	// Prometheus releases its own lock before returning, and never calls back
+	// into this package, so holding this one across r.registry.Unregister
+	// cannot invert a lock order with Register.
+	r.owned.mu.Lock()
+	defer r.owned.mu.Unlock()
 
-	collector, ok := r.collectors[name]
+	collector, ok := r.owned.collectors[name]
 	if !ok {
 		return false
 	}
 
-	if r.registry.Unregister(collector) {
-		delete(r.collectors, name)
-		return true
+	if !r.registry.Unregister(collector) {
+		return false
 	}
-	return false
+
+	delete(r.owned.collectors, name)
+	r.releaseShapes(collector)
+	return true
+}
+
+// UnregisterCollector removes a collector from the underlying registry and
+// releases the shape records it owned. It reports whether the collector was
+// registered.
+//
+// This is the path for a collector a BUILDER produced. Register/Unregister
+// track collectors by a caller-chosen name and never create a shape record;
+// builders create the shape record and are not tracked by name, so the two
+// populations are disjoint and Unregister(name) alone could never release a
+// builder's record. Without this, dynamically creating and removing uniquely
+// named vectors retained every one of them -- label children included -- for
+// the registry's lifetime, because shapeRecord holds its collector strongly.
+//
+// Unregistering straight through PrometheusRegistry() still leaves the record
+// behind: this package cannot observe that call.
+func (r *Registry) UnregisterCollector(c prometheus.Collector) bool {
+	// Same serialisation as Unregister, for the same reason.
+	r.owned.mu.Lock()
+	defer r.owned.mu.Unlock()
+
+	if !r.registry.Unregister(c) {
+		return false
+	}
+
+	for name, tracked := range r.owned.collectors {
+		if sameCollector(tracked, c) {
+			delete(r.owned.collectors, name)
+		}
+	}
+
+	r.releaseShapes(c)
+	return true
+}
+
+// releaseShapes drops the shape records owned by a collector that has just
+// been unregistered.
+//
+// The records are stale as well as retaining: whatever registers that
+// descriptor next is a different collector, which registerOrExisting already
+// has to detect and refuse to vouch for.
+func (r *Registry) releaseShapes(c prometheus.Collector) {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+
+	for id, record := range r.state.shapes {
+		if sameCollector(record.owner, c) {
+			delete(r.state.shapes, id)
+		}
+	}
 }
 
 // Gatherer returns the underlying prometheus.Gatherer interface.

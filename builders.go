@@ -105,8 +105,7 @@ func (b *CounterBuilder) Build() prometheus.Counter {
 		ConstLabels: b.constLabels,
 	}
 	counter := prometheus.NewCounter(opts)
-	b.registry.MustRegister(counter)
-	return counter
+	return b.registry.registerOrExisting(counter, b.registry.metricID(b.name, nil, b.constLabels), kindShape("counter")+labelShape(nil)).(prometheus.Counter)
 }
 
 // BuildVec creates and registers a CounterVec (with labels).
@@ -119,8 +118,7 @@ func (b *CounterBuilder) BuildVec() *prometheus.CounterVec {
 		ConstLabels: b.constLabels,
 	}
 	counterVec := prometheus.NewCounterVec(opts, b.labels)
-	b.registry.MustRegister(counterVec)
-	return counterVec
+	return b.registry.registerOrExisting(counterVec, b.registry.metricID(b.name, b.labels, b.constLabels), kindShape("counter_vec")+labelShape(b.labels)).(*prometheus.CounterVec)
 }
 
 // --- HistogramBuilder methods ---
@@ -160,8 +158,7 @@ func (b *HistogramBuilder) Build() prometheus.Histogram {
 		ConstLabels: b.constLabels,
 	}
 	histogram := prometheus.NewHistogram(opts)
-	b.registry.MustRegister(histogram)
-	return histogram
+	return b.registry.registerOrExisting(histogram, b.registry.metricID(b.name, nil, b.constLabels), kindShape("histogram")+labelShape(nil)+";"+bucketShape(b.buckets)).(prometheus.Histogram)
 }
 
 // BuildVec creates and registers a HistogramVec (with labels).
@@ -175,8 +172,7 @@ func (b *HistogramBuilder) BuildVec() *prometheus.HistogramVec {
 		ConstLabels: b.constLabels,
 	}
 	histogramVec := prometheus.NewHistogramVec(opts, b.labels)
-	b.registry.MustRegister(histogramVec)
-	return histogramVec
+	return b.registry.registerOrExisting(histogramVec, b.registry.metricID(b.name, b.labels, b.constLabels), kindShape("histogram_vec")+labelShape(b.labels)+";"+bucketShape(b.buckets)).(*prometheus.HistogramVec)
 }
 
 // --- GaugeBuilder methods ---
@@ -209,8 +205,7 @@ func (b *GaugeBuilder) Build() prometheus.Gauge {
 		ConstLabels: b.constLabels,
 	}
 	gauge := prometheus.NewGauge(opts)
-	b.registry.MustRegister(gauge)
-	return gauge
+	return b.registry.registerOrExisting(gauge, b.registry.metricID(b.name, nil, b.constLabels), kindShape("gauge")+labelShape(nil)).(prometheus.Gauge)
 }
 
 // BuildVec creates and registers a GaugeVec (with labels).
@@ -223,8 +218,7 @@ func (b *GaugeBuilder) BuildVec() *prometheus.GaugeVec {
 		ConstLabels: b.constLabels,
 	}
 	gaugeVec := prometheus.NewGaugeVec(opts, b.labels)
-	b.registry.MustRegister(gaugeVec)
-	return gaugeVec
+	return b.registry.registerOrExisting(gaugeVec, b.registry.metricID(b.name, b.labels, b.constLabels), kindShape("gauge_vec")+labelShape(b.labels)).(*prometheus.GaugeVec)
 }
 
 // --- SummaryBuilder methods ---
@@ -264,8 +258,7 @@ func (b *SummaryBuilder) Build() prometheus.Summary {
 		ConstLabels: b.constLabels,
 	}
 	summary := prometheus.NewSummary(opts)
-	b.registry.MustRegister(summary)
-	return summary
+	return b.registry.registerOrExisting(summary, b.registry.metricID(b.name, nil, b.constLabels), kindShape("summary")+labelShape(nil)+";"+objectiveShape(b.objectives)).(prometheus.Summary)
 }
 
 // BuildVec creates and registers a SummaryVec (with labels).
@@ -279,8 +272,7 @@ func (b *SummaryBuilder) BuildVec() *prometheus.SummaryVec {
 		ConstLabels: b.constLabels,
 	}
 	summaryVec := prometheus.NewSummaryVec(opts, b.labels)
-	b.registry.MustRegister(summaryVec)
-	return summaryVec
+	return b.registry.registerOrExisting(summaryVec, b.registry.metricID(b.name, b.labels, b.constLabels), kindShape("summary_vec")+labelShape(b.labels)+";"+objectiveShape(b.objectives)).(*prometheus.SummaryVec)
 }
 
 // --- Predefined bucket configurations ---

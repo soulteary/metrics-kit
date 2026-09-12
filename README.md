@@ -280,12 +280,15 @@ func main() {
 ## Security and Deployment
 
 - **Protect the `/metrics` endpoint.** The handlers returned by `Handler()`, `HandlerFor()`, etc. do not perform authentication. Do not expose `/metrics` to the public internet. Prefer one or more of: a dedicated admin port, network policies, reverse-proxy authentication, or IP allowlisting so only your monitoring stack can scrape.
-- **Path label cardinality.** The default HTTP metrics config uses `DefaultPathNormalize` so paths like `/users/123` become `/users/:id`. In production, always use path normalization (or skip certain paths) to avoid unbounded time series and potential DoS from high cardinality.
+- **Path label cardinality.** The default HTTP metrics config uses `DefaultPathNormalize` so paths like `/users/123` become `/users/:id`. In production, always use path normalization (or skip certain paths) to avoid unbounded time series and potential DoS from high cardinality. `DefaultPathNormalize` replaces only **unambiguous** id shapes -- all-digit segments, UUIDs, long hex strings and ULIDs. Nanoid- and base64url-shaped segments are left alone, because nothing distinguishes a 21-character random token from a 21-character route name such as `/oauth2CallbackHandler`; `PathNormalizeWithTokens` guesses at them by shape alone -- **any** 21-22 character URL-safe segment, `/forgot-password-reset` included -- and a wrong guess silently merges a real endpoint into `/:id`. Check your route table for a segment of that length before enabling it, and use a custom `PathTransformFunc` when your ids have a known exact form.
 - **Label values from untrusted input.** For metrics that use labels from user or external input (e.g. in `CommonMetrics` such as scope, operation, provider), either pass only controlled enum-like values or sanitize with `SanitizeLabelValue(s, metrics.DefaultLabelValueMaxLength)` to avoid breaking the exposition format (e.g. newlines in label values). Example: `scope := metrics.SanitizeLabelValue(userInput, metrics.DefaultLabelValueMaxLength)` before calling `rateLimit.RecordHit(scope)`.
 
 ## Registry and Unregister
 
-- `Unregister(name)` only affects collectors that were registered with `Register(name, collector)`. Metrics created via the builders (`Build()` / `BuildVec()`) are registered with `MustRegister` and are not tracked by name; to remove them, keep the collector reference and call the underlying `registry.PrometheusRegistry().Unregister(collector)`.
+- `Unregister(name)` only affects collectors registered with `Register(name, collector)`. Metrics created via the builders (`Build()` / `BuildVec()`) are not tracked by name, so `Unregister` cannot reach them.
+- To remove a builder-created collector, keep its reference and call **`registry.UnregisterCollector(collector)`**. As well as unregistering it, this releases the shape record that describes it -- the record holds the collector strongly, so dynamically creating and removing uniquely named vectors otherwise retains every one of them, label children included, for the registry's lifetime.
+- Calling `registry.PrometheusRegistry().Unregister(collector)` directly still works, but this package cannot observe that call, so the shape record is left behind. Prefer `UnregisterCollector`.
+- Note that re-registering the same metric name with **different label names** panics inside Prometheus whatever you do: `client_golang` keeps its `dimHashesByName` for the life of the process on purpose.
 
 ## Requirements
 

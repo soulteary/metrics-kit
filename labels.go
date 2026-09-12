@@ -17,8 +17,11 @@ func SanitizeLabelValue(s string, maxLen int) string {
 	if s == "" {
 		return s
 	}
-	// Replace characters that break Prometheus text format or could inject extra lines
+	// Replace characters that break the Prometheus text format or could inject
+	// extra lines. A label value is written as name="value", so the quote
+	// matters as much as the backslash and the newline did.
 	s = strings.ReplaceAll(s, "\\", "_")
+	s = strings.ReplaceAll(s, "\"", "_")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.TrimSpace(s)
@@ -35,19 +38,98 @@ func SanitizeLabelValue(s string, maxLen int) string {
 
 // pathSegmentID matches a single path segment that looks like a numeric ID or UUID.
 // Used by DefaultPathNormalize to reduce label cardinality.
-var pathSegmentID = regexp.MustCompile(`^(\d+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{24,})$`)
+var pathSegmentID = regexp.MustCompile(`^(` +
+	`\d+` + // numeric ids
+	`|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}` + // UUID
+	`|[0-9a-fA-F]{16,}` + // hex ids: 16 covers a 64-bit id, which the previous 24 floor missed
+	// ULID: 128 bits in 26 Crockford digits, so the first carries only 2 and
+	// can only be 0-7. Crockford is case-INSENSITIVE and libraries emit both,
+	// so either case is accepted -- but uniformly, since a mixed-case ULID is
+	// not something any encoder produces and allowing it would only widen the
+	// net. The alphabet excludes I, L, O and U.
+	`|[0-7](?:[0-9A-HJKMNP-TV-Z]{25}|[0-9a-hjkmnp-tv-z]{25})` +
+	`)$`)
+
+// pathSegmentToken matches a 21- or 22-character URL-safe segment -- the shape
+// of a nanoid or a base64url-encoded 16-byte token.
+//
+// This is a GUESS, and it is only reached through PathNormalizeWithTokens.
+// Nothing reliably separates such a token from a route NAME of the same
+// length: both draw on the same alphabet, and three successive attempts to
+// find a discriminator each fell to an ordinary endpoint.
+//
+//   - length alone: /forgot-password-reset is exactly 21 URL-safe characters
+//   - plus a digit and an uppercase letter: /oauth2CallbackHandler satisfies both
+//   - plus a class-transition threshold: /s3ToS3CopyHandlerV2Job crosses it,
+//     because acronym-heavy camel case mixes classes as briskly as random text
+//
+// The two failure modes are not symmetric. Missing a token costs one extra
+// series for one route. A false positive silently merges real endpoints into
+// /:id, destroying their own request counts and latency histograms and
+// polluting whatever they merge into -- and nothing in the metrics says it
+// happened. That is why the default no longer guesses.
+var pathSegmentToken = regexp.MustCompile(`^[A-Za-z0-9_-]{21,22}$`)
+
+// looksLikeGeneratedToken reports whether seg has the shape of a generated
+// URL-safe identifier: 21 or 22 characters of [A-Za-z0-9_-].
+//
+// That IS the whole shape, and the whole guess. An earlier version also
+// demanded a digit and an uppercase letter, which was a leftover from when
+// this ran by default and had to avoid swallowing names like
+// /forgot-password-reset. As an opt-in it only made the guess quietly
+// incomplete: 2.8% of random 21-character tokens contain no digit and were
+// left to create a series each -- measured over 300k samples of nanoid's
+// alphabet, and the reason the uppercase half never mattered is that missing
+// one is a 0.002% event. It filtered out 2.8% of real ids to exclude route
+// names it could not reliably exclude anyway.
+//
+// So the opt-in matches the shape and says so. A caller enabling
+// PathNormalizeWithTokens is accepting that ANY 21-22 character URL-safe
+// segment normalizes, /forgot-password-reset included, and has checked their
+// route table for one. Where the ids have a known exact form, a custom
+// PathTransformFunc matching it precisely beats any guess.
+func looksLikeGeneratedToken(seg string) bool {
+	return pathSegmentToken.MatchString(seg)
+}
 
 // DefaultPathNormalize normalizes request paths for use as metric labels to avoid cardinality explosion.
 // It replaces numeric and UUID-like path segments with ":id", e.g. /users/123 -> /users/:id,
 // /items/550e8400-e29b-41d4-a716-446655440000 -> /items/:id.
 // Use this as PathTransformFunc in production so each distinct ID does not create a new time series.
+//
+// Only UNAMBIGUOUS id shapes are replaced: all-digit segments, UUIDs, long hex
+// strings and ULIDs. None of them can be mistaken for a route name.
+//
+// Segments that merely look random -- a nanoid, a base64url token -- are left
+// alone, because nothing separates one from a route name of the same length
+// (see pathSegmentToken). If your routes carry such ids, use
+// PathNormalizeWithTokens and check it against your own route table.
 func DefaultPathNormalize(path string) string {
+	return normalizePath(path, false)
+}
+
+// PathNormalizeWithTokens is DefaultPathNormalize plus a guess at nanoid- and
+// base64url-shaped segments: ANY 21 or 22 characters of [A-Za-z0-9_-].
+//
+// Use it when your paths carry ids of that shape AND no static route of yours
+// is 21-22 URL-safe characters -- it cannot tell the difference, and a wrong
+// guess merges a real endpoint into /:id, destroying its metrics silently.
+// /forgot-password-reset is exactly 21, so check your route table before
+// turning this on.
+//
+// Where the ids have a known exact form, a custom PathTransformFunc matching
+// it precisely beats this guess in both directions.
+func PathNormalizeWithTokens(path string) string {
+	return normalizePath(path, true)
+}
+
+func normalizePath(path string, guessTokens bool) string {
 	if path == "" || path == "/" {
 		return path
 	}
 	segments := strings.Split(strings.Trim(path, "/"), "/")
 	for i, seg := range segments {
-		if pathSegmentID.MatchString(seg) {
+		if pathSegmentID.MatchString(seg) || (guessTokens && looksLikeGeneratedToken(seg)) {
 			segments[i] = ":id"
 		}
 	}

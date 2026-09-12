@@ -280,12 +280,15 @@ func main() {
 ## 安全与部署
 
 - **保护 `/metrics` 端点**：`Handler()`、`HandlerFor()` 等返回的处理器不包含鉴权。请勿将 `/metrics` 暴露到公网。建议使用独立管理端口、网络策略、反向代理鉴权或 IP 白名单，仅允许监控系统抓取。
-- **路径标签基数**：默认 HTTP 指标配置使用 `DefaultPathNormalize`，将 `/users/123` 规范为 `/users/:id`。生产环境务必做路径归一化或跳过部分路径，避免时间序列基数爆炸和 DoS 风险。
+- **路径标签基数**：默认 HTTP 指标配置使用 `DefaultPathNormalize`，将 `/users/123` 规范为 `/users/:id`。生产环境务必做路径归一化或跳过部分路径，避免时间序列基数爆炸和 DoS 风险。`DefaultPathNormalize` 只替换**无歧义**的 id 形态：纯数字、UUID、长十六进制串与 ULID。nanoid 与 base64url 形态的分段不再替换——21 个字符的随机 token 与同长度的路由名（例如 `/oauth2CallbackHandler`）无法区分；`PathNormalizeWithTokens` 仅按形态去猜——**任意** 21-22 个字符的 URL-safe 分段，包括 `/forgot-password-reset`——而猜错会把真实端点静默并入 `/:id`。启用前请检查路由表中是否存在该长度的分段；若 id 有确定的精确形态，请改用自定义 `PathTransformFunc`。
 - **不可信输入的标签值**：对来自用户或外部的标签值（如 CommonMetrics 的 scope、operation、provider），应只传入受控的枚举值，或使用 `SanitizeLabelValue(s, metrics.DefaultLabelValueMaxLength)` 做清洗，避免破坏 exposition 格式（如换行符）。示例：在调用 `rateLimit.RecordHit(scope)` 前执行 `scope := metrics.SanitizeLabelValue(userInput, metrics.DefaultLabelValueMaxLength)`。
 
 ## 注册表与 Unregister
 
-- `Unregister(name)` 仅对通过 `Register(name, collector)` 注册的采集器生效。通过构建器 `Build()`/`BuildVec()` 创建的指标使用 `MustRegister` 注册且未按名称追踪；若要移除，需保留 collector 引用并调用底层 `registry.PrometheusRegistry().Unregister(collector)`。
+- `Unregister(name)` 仅对通过 `Register(name, collector)` 注册的采集器生效。通过构建器 `Build()`/`BuildVec()` 创建的指标不按名称追踪，`Unregister` 无法处理它们。
+- 移除构建器创建的采集器请保留其引用并调用 **`registry.UnregisterCollector(collector)`**。它在注销之外还会释放描述该采集器的 shape 记录——该记录强引用采集器，否则动态创建并移除大量唯一命名的向量会在注册表的整个生命周期内保留它们（连同其标签子项）。
+- 直接调用 `registry.PrometheusRegistry().Unregister(collector)` 仍然可行，但本包无法感知该调用，shape 记录会被遗留。请优先使用 `UnregisterCollector`。
+- 另外请注意：用**不同的标签名**重新注册同一指标名，无论如何都会在 Prometheus 内部 panic——`client_golang` 有意在整个进程生命周期内保留 `dimHashesByName`。
 
 ## 要求
 
