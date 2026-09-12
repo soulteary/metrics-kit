@@ -760,3 +760,69 @@ func TestDefaultPathNormalizeStillReplacesUnambiguousIDs(t *testing.T) {
 		})
 	}
 }
+
+// --- Codex review round 8 (PR #4) ---
+
+// TestULIDPatternRejectsImpossibleLeadingCharacters is the regression test for
+// the ULID branch accepting the whole Crockford alphabet in first position.
+//
+// A ULID is 128 bits in 26 base32 digits, which is 130 bits of space, so the
+// leading digit carries only the two remaining bits and can only be 0-7.
+// Allowing all 32 made any 26-character Crockford string an id, and
+// /PAYMENTCARDRESETCHECKPAGES -- an ordinary static route -- was silently
+// normalized to /:id. Same false-positive class as the token heuristic, but
+// this one has a real structural constraint to use.
+func TestULIDPatternRejectsImpossibleLeadingCharacters(t *testing.T) {
+	for _, path := range []string{
+		// The reported case, and other 26-character uppercase routes.
+		"/PAYMENTCARDRESETCHECKPAGES",
+		"/ZZZZZZZZZZZZZZZZZZZZZZZZZZ", // beyond 2^128: not a representable ULID
+		"/SUBSCRIPTIONRENEWALSTATES",
+	} {
+		t.Run(path, func(t *testing.T) {
+			if got := DefaultPathNormalize(path); got != path {
+				t.Errorf("DefaultPathNormalize(%q) = %q, want it left alone: not a representable ULID", path, got)
+			}
+		})
+	}
+
+	// Real ULIDs still normalize, including the largest representable one.
+	for _, id := range []string{
+		"01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		"7ZZZZZZZZZZZZZZZZZZZZZZZZZ", // 2^128-1
+		"00000000000000000000000000", // 0
+	} {
+		t.Run(id, func(t *testing.T) {
+			if got := DefaultPathNormalize("/e/" + id); got != "/e/:id" {
+				t.Errorf("DefaultPathNormalize(/e/%s) = %q, want /e/:id", id, got)
+			}
+		})
+	}
+}
+
+// TestSummaryObjectivesAreNotCanonicalizedToDefault pins the asymmetry between
+// objectiveShape and bucketShape, which reads like an oversight and is not.
+//
+// Empty buckets ARE prometheus.DefBuckets -- the package declares that
+// variable and newHistogram assigns it -- so the two spellings build the same
+// histogram and must fingerprint alike. client_golang has no DefObjectives
+// any more, and empty objectives build a noObjectivesSummary carrying NO
+// quantiles, which is a different layout from any explicit quantile map.
+// Collapsing them would let two genuinely different summaries pass the
+// conflict check.
+func TestSummaryObjectivesAreNotCanonicalizedToDefault(t *testing.T) {
+	none := objectiveShape(nil)
+	explicit := objectiveShape(map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001})
+
+	if none == explicit {
+		t.Error("a summary with no quantiles fingerprints the same as one with three")
+	}
+	if none != objectiveShape(map[float64]float64{}) {
+		t.Error("nil and empty objectives must fingerprint alike; both mean no quantiles")
+	}
+
+	// The histogram side, by contrast, MUST collapse.
+	if bucketShape(nil) != bucketShape(prometheus.DefBuckets) {
+		t.Error("empty buckets and DefBuckets are the same histogram and must fingerprint alike")
+	}
+}

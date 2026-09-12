@@ -374,9 +374,21 @@ func bucketShape(buckets []float64) string {
 }
 
 // objectiveShape fingerprints summary objectives.
+//
+// No canonicalisation here, deliberately, and NOT by analogy with
+// bucketShape. Empty buckets really are prometheus.DefBuckets -- the package
+// declares that variable and newHistogram assigns it -- so the two spellings
+// build the same histogram and must fingerprint alike. Summaries are the
+// opposite: client_golang has no DefObjectives any more, and empty objectives
+// build a noObjectivesSummary, a summary carrying NO quantiles. That is a
+// different layout from any explicit quantile map, so collapsing them would
+// let two genuinely different summaries pass the conflict check.
+//
+// Hence "none" rather than "default": the empty case is an absence of
+// quantiles, not a default set of them.
 func objectiveShape(objectives map[float64]float64) string {
 	if len(objectives) == 0 {
-		return "objectives=default"
+		return "objectives=none"
 	}
 	quantiles := make([]float64, 0, len(objectives))
 	for q := range objectives {
