@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit/v2.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit/v2)
 [![Go Report Card](.github/goreportcard.svg)](.github/goreportcard-report.md)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/soulteary/metrics-kit/graph/badge.svg)](https://codecov.io/gh/soulteary/metrics-kit)
 
 [English](README.md)
@@ -174,6 +174,38 @@ otp.RecordSend("email", "smtp", "success", 100*time.Millisecond)
 otp.RecordVerification("success", "")
 ```
 
+### 路径归一化
+
+把路径用作指标标签是一种基数风险：每个不同取值都会产生一条时间序列。
+`DefaultPathNormalize` 会折叠那些**无歧义**的 ID 形态：
+
+| 形态 | 示例 | 归一化为 |
+|------|------|----------|
+| 纯数字段 | `/users/123` | `/users/:id` |
+| UUID | `/orders/3f1a…` | `/orders/:id` |
+| 16 位及以上十六进制 | `/t/9f86d081884c7d65` | `/t/:id` |
+| ULID（大小写均可） | `/events/01ARZ3ND…` | `/events/:id` |
+
+无论你是否设置 `PathTransformFunc`，中间件都会应用它，因此用结构体字面量构造的配置
+同样会得到归一化。
+
+```go
+cfg := metrics.DefaultHTTPMetricsConfig()
+cfg.PathTransformFunc = metrics.PathNormalizeWithTokens // 范围更宽，见下文
+cfg.SkipPaths = []string{"/healthz", "/metrics"}
+cfg.DisablePathNormalization = true                     // 原始路径；先看下面的警告
+```
+
+**nanoid 和 base64url 形态的段是特意不处理的。** 没有任何特征能把一个 21 字符的随机
+token 与一个 21 字符的路由名（比如 `/oauth2CallbackHandler`）区分开。
+`PathNormalizeWithTokens` 纯按形状猜——**任何** 21–22 字符的 URL-safe 段都算，包括
+`/forgot-password-reset`——而猜错会把一个真实端点静默地合并进 `/:id`。启用之前请先
+检查你的路由表里有没有这个长度的段；当你的 ID 有确定的精确形式时，请优先用自定义的
+`PathTransformFunc`。
+
+`DisablePathNormalization` 会记录原始路径。只在路由集合封闭且已知的场景使用；否则
+请求随机 URL 会每个请求产生一条新的时间序列，这是耗尽 Prometheus 服务器的廉价手段。
+
 ### 桶预设
 
 ```go
@@ -277,6 +309,85 @@ func main() {
 }
 ```
 
+## API 参考
+
+### 注册表
+
+```go
+registry := metrics.NewRegistry("myapp")
+registry = metrics.NewRegistryWithSubsystem("myapp", "http")
+registry = metrics.DefaultRegistry()            // 进程级默认注册表
+
+registry.Namespace()
+registry.Gatherer()                             // prometheus.Gatherer
+registry.PrometheusRegistry()                   // 底层 *prometheus.Registry
+
+registry.Register("name", collector)            // 按名称追踪
+registry.Unregister("name")
+registry.MustRegister(collectors...)
+registry.UnregisterCollector(collector)         // 用于构建器创建的采集器
+```
+
+### 构建器
+
+```go
+registry.Counter("requests_total").Help("…").Labels("method").BuildVec()
+registry.Gauge("queue_depth").Help("…").Build()
+registry.Histogram("duration_seconds").Buckets(metrics.HTTPDurationBuckets()).BuildVec()
+registry.Summary("payload_bytes").Build()
+```
+
+同一个指标名声明两次会**复用已有的采集器**而不是 panic，因此两个组件去取同一个计数器
+都能拿到。
+
+### 暴露端点处理器
+
+```go
+http.Handle("/metrics", metrics.Handler())                      // DefaultRegistry
+http.Handle("/metrics", metrics.HandlerFor(registry))
+http.Handle("/metrics", metrics.HandlerForGatherer(gatherer))
+http.Handle("/metrics", metrics.NewHandler(metrics.DefaultHandlerOpts()))
+
+metrics.RegisterHTTPHandler(mux, "/metrics")
+metrics.RegisterHTTPHandlerFor(mux, "/metrics", registry)
+
+app.Get("/metrics", metrics.FiberHandler())
+app.Get("/metrics", metrics.FiberHandlerFor(registry))
+app.Get("/metrics", metrics.FiberHandlerForGatherer(gatherer))
+app.Get("/metrics", metrics.NewFiberHandler(metrics.DefaultHandlerOpts()))
+```
+
+它们都不做认证，详见[安全与部署](#安全与部署)。
+
+### HTTP 指标
+
+```go
+cfg := metrics.DefaultHTTPMetricsConfig()
+m := metrics.NewHTTPMetrics(cfg)                 // 拿到采集器自己驱动
+
+app.Use(metrics.NewFiberMiddleware("myapp"))     // 或者
+app.Use(metrics.NewFiberMiddlewareWithConfig(cfg))
+```
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `Namespace` / `Subsystem` | 取自注册表 | 指标名前缀 |
+| `Registry` | `DefaultRegistry()` | 采集器注册到哪里 |
+| `PathTransformFunc` | `DefaultPathNormalize` | 中间件无条件应用 |
+| `DisablePathNormalization` | `false` | 记录原始路径——先读警告 |
+| `SkipPaths` | 无 | 这些路径不记录任何指标 |
+| `DurationBuckets` | `HTTPDurationBuckets()` | |
+| `SizeBuckets` | `DefaultBuckets()` | |
+| `IncludeRequestSize` | | 取自 `Content-Length`，不读请求体 |
+| `IncludeResponseSize` | | |
+| `IncludeRequestsInFlight` | | |
+
+### 通用指标
+
+`metrics.NewCommonMetrics(registry)` 返回一个 `*CommonMetrics`，打包了现成的几组指标：
+`AuthMetrics`、`OTPMetrics`、`CacheMetrics`、`RedisMetrics`、`RateLimitMetrics`、
+`ExternalServiceMetrics` 和 `BackgroundTaskMetrics`。
+
 ## 安全与部署
 
 - **保护 `/metrics` 端点**：`Handler()`、`HandlerFor()` 等返回的处理器不包含鉴权。请勿将 `/metrics` 暴露到公网。建议使用独立管理端口、网络策略、反向代理鉴权或 IP 白名单，仅允许监控系统抓取。
@@ -290,9 +401,44 @@ func main() {
 - 直接调用 `registry.PrometheusRegistry().Unregister(collector)` 仍然可行，但本包无法感知该调用，shape 记录会被遗留。请优先使用 `UnregisterCollector`。
 - 另外请注意：用**不同的标签名**重新注册同一指标名，无论如何都会在 Prometheus 内部 panic——`client_golang` 有意在整个进程生命周期内保留 `dimHashesByName`。
 
+## 升级说明（v2.2.0）
+
+新增一个字段和两个函数，没有删除任何东西。第一条会把崩溃变成正常运行——这正是目的。
+
+- **重名指标不再让进程挂掉。** 所有构建器都经由 `MustRegister` 注册，因此同一个名字
+  声明两次——两个组件去取同一个计数器，或者某个包在测试二进制里被初始化两次——会在启动
+  时 panic 并带走整个服务。现在构建器会复用 `prometheus.AlreadyRegisteredError` 交回的
+  采集器。注意：用**不同标签名**重新注册同一个名字，无论如何仍会在 Prometheus 内部
+  panic——`client_golang` 有意在整个进程生命周期内保留 `dimHashesByName`。
+- **原始路径不再会意外进入标签值。** 中间件此前只在 `PathTransformFunc` 非 nil 时才
+  应用它。`DefaultMiddlewareConfig` 会设置它，但用结构体字面量构造的配置——
+  `HTTPMetricsConfig{SkipPaths: …}`——会把它留成 nil，于是原始 URL 路径成了标签：
+  请求随机 URL 会每个请求产生一条新时间序列。现在默认值由中间件应用，而不是假定来自
+  构造函数。如果你此前是用字面量构造配置，**请预期路径标签变少、变粗**。
+- **`DefaultPathNormalize` 识别更多 ID 形态。** 它此前只匹配数字、UUID 和 24 位及以上
+  的十六进制，于是 16 位十六进制 ID、ULID 和 nanoid 还是漏进了标签。现在 16 位及以上
+  十六进制和**大小写任意**的 ULID 都会被匹配——该编码本身是大小写无关的，各个库两种都
+  会输出。
+- **请求大小取自 `Content-Length`。** 中间件此前调用 `c.Body()`，会为每个请求物化整个
+  请求体——包括处理器用流式读取或根本不读的那些——而且发生在链路更下游的任何体积限制
+  之前。
+- **`SanitizeLabelValue` 会转义双引号。** 它此前转义反斜杠和换行，但没转义 `"`，而标签
+  是写成 `name="value"` 的——双引号和那两者一样能突破字段边界。
+- **新增 `UnregisterCollector`**，这是移除构建器创建的采集器的方式。
+  `Unregister(name)` 只能处理通过 `Register(name, collector)` 注册的采集器。走
+  `PrometheusRegistry().Unregister` 仍然可行，但会遗留一条强引用该采集器的 shape 记录
+  ——于是动态创建并移除大量唯一命名的向量，会在注册表的整个生命周期内保留它们全部
+  （连同标签子项）。
+- **新增 `PathNormalizeWithTokens` 和 `DisablePathNormalization`。** 详见
+  [路径归一化](#路径归一化)——前者是一个可能合并真实端点的可选猜测，后者完全关闭归一化。
+- **按名称的注册归各自的 wrapper 所有。** 同一个注册表上的两个 `DefaultRegistry()`
+  wrapper 此前共享按名注册的映射，于是第二个的 `Register("x", c2)` 会覆盖第一个的条目，
+  而第一个的 `Unregister("x")` 会移除*第二个*的采集器。
+- **要求里写的是 Go 1.26**；`go.mod` 需要 `1.27.0`。
+
 ## 要求
 
-- Go 1.26 或更高版本
+- **Go 1.27+**（`go.mod` 声明 `go 1.27.0`）
 - github.com/prometheus/client_golang v1.22.0+
 - github.com/gofiber/fiber/v3 v3.4.0+（用于 Fiber 中间件）
 
@@ -321,4 +467,4 @@ go tool cover -func=coverage.out
 
 ## 许可证
 
-详见 [LICENSE](LICENSE) 文件。
+Apache License 2.0 —— 详见 [LICENSE](LICENSE)。

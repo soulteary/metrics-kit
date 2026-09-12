@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit/v2.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit/v2)
 [![Go Report Card](.github/goreportcard.svg)](.github/goreportcard-report.md)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/soulteary/metrics-kit/graph/badge.svg)](https://codecov.io/gh/soulteary/metrics-kit)
 
 [中文文档](README_CN.md)
@@ -174,6 +174,40 @@ otp.RecordSend("email", "smtp", "success", 100*time.Millisecond)
 otp.RecordVerification("success", "")
 ```
 
+### Path Normalization
+
+A path used as a metric label is a cardinality risk: one time series per distinct
+value. `DefaultPathNormalize` collapses the **unambiguous** id shapes:
+
+| Shape | Example | Becomes |
+|-------|---------|---------|
+| All-digit segment | `/users/123` | `/users/:id` |
+| UUID | `/orders/3f1a…` | `/orders/:id` |
+| Hex, 16 or more chars | `/t/9f86d081884c7d65` | `/t/:id` |
+| ULID (either case) | `/events/01ARZ3ND…` | `/events/:id` |
+
+It is applied by the middleware whether or not you set `PathTransformFunc`, so a
+config built as a struct literal still gets it.
+
+```go
+cfg := metrics.DefaultHTTPMetricsConfig()
+cfg.PathTransformFunc = metrics.PathNormalizeWithTokens // wider, see below
+cfg.SkipPaths = []string{"/healthz", "/metrics"}
+cfg.DisablePathNormalization = true                     // raw paths; see the warning
+```
+
+**Nanoid- and base64url-shaped segments are deliberately left alone.** Nothing
+distinguishes a 21-character random token from a 21-character route name such as
+`/oauth2CallbackHandler`. `PathNormalizeWithTokens` guesses at them by shape
+alone — **any** 21–22 character URL-safe segment, `/forgot-password-reset`
+included — and a wrong guess silently merges a real endpoint into `/:id`. Check
+your route table for a segment of that length before enabling it, and prefer a
+custom `PathTransformFunc` when your ids have a known exact form.
+
+`DisablePathNormalization` logs the raw path. Use it only where the route set is
+closed and known; otherwise requesting random URLs mints a new time series per
+request, which is a cheap way to exhaust a Prometheus server.
+
 ### Bucket Presets
 
 ```go
@@ -277,6 +311,85 @@ func main() {
 }
 ```
 
+## API Reference
+
+### Registries
+
+```go
+registry := metrics.NewRegistry("myapp")
+registry = metrics.NewRegistryWithSubsystem("myapp", "http")
+registry = metrics.DefaultRegistry()            // process-wide default
+
+registry.Namespace()
+registry.Gatherer()                             // prometheus.Gatherer
+registry.PrometheusRegistry()                   // the underlying *prometheus.Registry
+
+registry.Register("name", collector)            // tracked by name
+registry.Unregister("name")
+registry.MustRegister(collectors...)
+registry.UnregisterCollector(collector)         // for builder-created collectors
+```
+
+### Builders
+
+```go
+registry.Counter("requests_total").Help("…").Labels("method").BuildVec()
+registry.Gauge("queue_depth").Help("…").Build()
+registry.Histogram("duration_seconds").Buckets(metrics.HTTPDurationBuckets()).BuildVec()
+registry.Summary("payload_bytes").Build()
+```
+
+Declaring the same metric name twice **reuses the existing collector** instead of
+panicking, so two components reaching for the same counter both get it.
+
+### Exposition Handlers
+
+```go
+http.Handle("/metrics", metrics.Handler())                      // DefaultRegistry
+http.Handle("/metrics", metrics.HandlerFor(registry))
+http.Handle("/metrics", metrics.HandlerForGatherer(gatherer))
+http.Handle("/metrics", metrics.NewHandler(metrics.DefaultHandlerOpts()))
+
+metrics.RegisterHTTPHandler(mux, "/metrics")
+metrics.RegisterHTTPHandlerFor(mux, "/metrics", registry)
+
+app.Get("/metrics", metrics.FiberHandler())
+app.Get("/metrics", metrics.FiberHandlerFor(registry))
+app.Get("/metrics", metrics.FiberHandlerForGatherer(gatherer))
+app.Get("/metrics", metrics.NewFiberHandler(metrics.DefaultHandlerOpts()))
+```
+
+None of these authenticate. See [Security and Deployment](#security-and-deployment).
+
+### HTTP Metrics
+
+```go
+cfg := metrics.DefaultHTTPMetricsConfig()
+m := metrics.NewHTTPMetrics(cfg)                 // the collectors, to drive yourself
+
+app.Use(metrics.NewFiberMiddleware("myapp"))     // or
+app.Use(metrics.NewFiberMiddlewareWithConfig(cfg))
+```
+
+| Option | Default | Notes |
+|--------|---------|-------|
+| `Namespace` / `Subsystem` | from the registry | metric name prefix |
+| `Registry` | `DefaultRegistry()` | where the collectors land |
+| `PathTransformFunc` | `DefaultPathNormalize` | applied by the middleware regardless |
+| `DisablePathNormalization` | `false` | log raw paths — read the warning first |
+| `SkipPaths` | none | paths to record nothing for |
+| `DurationBuckets` | `HTTPDurationBuckets()` | |
+| `SizeBuckets` | `DefaultBuckets()` | |
+| `IncludeRequestSize` | | from `Content-Length`, not the body |
+| `IncludeResponseSize` | | |
+| `IncludeRequestsInFlight` | | |
+
+### Common Metrics
+
+`metrics.NewCommonMetrics(registry)` returns a `*CommonMetrics` bundling the
+ready-made groups: `AuthMetrics`, `OTPMetrics`, `CacheMetrics`, `RedisMetrics`,
+`RateLimitMetrics`, `ExternalServiceMetrics` and `BackgroundTaskMetrics`.
+
 ## Security and Deployment
 
 - **Protect the `/metrics` endpoint.** The handlers returned by `Handler()`, `HandlerFor()`, etc. do not perform authentication. Do not expose `/metrics` to the public internet. Prefer one or more of: a dedicated admin port, network policies, reverse-proxy authentication, or IP allowlisting so only your monitoring stack can scrape.
@@ -290,9 +403,55 @@ func main() {
 - Calling `registry.PrometheusRegistry().Unregister(collector)` directly still works, but this package cannot observe that call, so the shape record is left behind. Prefer `UnregisterCollector`.
 - Note that re-registering the same metric name with **different label names** panics inside Prometheus whatever you do: `client_golang` keeps its `dimHashesByName` for the life of the process on purpose.
 
+## Upgrade Notes (v2.2.0)
+
+One field and two functions were added; nothing was removed. The first item can
+change a crash into normal operation, which is the point.
+
+- **A duplicate metric name no longer kills the process.** Every builder
+  registered through `MustRegister`, so declaring the same name twice — two
+  components reaching for the same counter, or a package initialised twice in a
+  test binary — panicked at startup and took the service down. Builders now reuse
+  the collector that `prometheus.AlreadyRegisteredError` hands back. Note that
+  re-registering a name with **different label names** still panics inside
+  Prometheus whatever you do: `client_golang` keeps its `dimHashesByName` for the
+  life of the process on purpose.
+- **Raw paths no longer reach label values by accident.** The middleware applied
+  `PathTransformFunc` only when non-nil. `DefaultMiddlewareConfig` sets it, but a
+  config built as a struct literal — `HTTPMetricsConfig{SkipPaths: …}` — left it
+  nil, and the raw URL path became the label: requesting random URLs minted a new
+  time series per request. The default is now applied in the middleware rather
+  than assumed from the constructor. **Expect fewer, coarser path labels** if you
+  were building the config as a literal.
+- **`DefaultPathNormalize` recognises more id shapes.** It matched digits, UUIDs
+  and hex of 24+ characters, so 16-character hex ids, ULIDs and nanoids leaked
+  into labels anyway. 16+ hex and ULIDs in **either case** are matched now — the
+  encoding is case-insensitive and libraries emit both.
+- **Request size comes from `Content-Length`.** The middleware called `c.Body()`,
+  materialising the whole body for every request — including ones the handler
+  streams or never reads — and ran before any body-size limit further down the
+  chain.
+- **`SanitizeLabelValue` escapes the double quote.** It escaped backslashes and
+  newlines but not `"`, and a label is written `name="value"` — the quote breaks
+  out of the field exactly as the others do.
+- **`UnregisterCollector` is new**, and is how to remove a builder-created
+  collector. `Unregister(name)` only reaches collectors registered with
+  `Register(name, collector)`. Going through `PrometheusRegistry().Unregister`
+  still works but leaves behind a shape record that holds the collector strongly —
+  so dynamically creating and removing uniquely named vectors retained every one
+  of them, label children included, for the registry's lifetime.
+- **`PathNormalizeWithTokens` and `DisablePathNormalization` are new.** See
+  [Path Normalization](#path-normalization) — the first is an opt-in guess that
+  can merge real endpoints, the second turns normalization off entirely.
+- **Named registrations are per-wrapper.** Two `DefaultRegistry()` wrappers over
+  one registry shared the named-registration map, so the second's
+  `Register("x", c2)` overwrote the first's entry and the first's
+  `Unregister("x")` removed the *second's* collector.
+- **Requirements said Go 1.26**; `go.mod` requires `1.27.0`.
+
 ## Requirements
 
-- Go 1.26 or later
+- **Go 1.27+** (`go.mod` declares `go 1.27.0`)
 - github.com/prometheus/client_golang v1.22.0+
 - github.com/gofiber/fiber/v3 v3.4.0+ (for Fiber middleware)
 
