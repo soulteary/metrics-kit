@@ -904,10 +904,11 @@ func TestReplacedDefaultRegistriesAreCollectible(t *testing.T) {
 	// the next replacement lands.
 	func() {
 		reg := prometheus.NewRegistry()
-		if stateFor(reg) == nil {
+		state := stateFor(reg)
+		if state == nil {
 			t.Fatal("stateFor returned nil")
 		}
-		if stateFor(reg) != stateFor(reg) {
+		if stateFor(reg) != state {
 			t.Fatal("stateFor is not stable for one registry")
 		}
 	}()
