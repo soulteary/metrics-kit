@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // TestDuplicateMetricDoesNotPanic: builders used MustRegister, so declaring
@@ -825,4 +826,55 @@ func TestSummaryObjectivesAreNotCanonicalizedToDefault(t *testing.T) {
 	if bucketShape(nil) != bucketShape(prometheus.DefBuckets) {
 		t.Error("empty buckets and DefBuckets are the same histogram and must fingerprint alike")
 	}
+}
+
+// TestCounterNamesAreNotNormalizedByTotalSuffix pins that `jobs` and
+// `jobs_total` stay SEPARATE metrics, against the suggestion that the shape
+// cache should canonicalize the `_total` suffix before lookup.
+//
+// client_golang does not strip it. The descriptors keep the caller's name
+// verbatim -- fqName "jobs" and "jobs_total" -- and registering both in one
+// prometheus.Registry succeeds, so they are different collectors, not one.
+// The `_total` handling people remember lives in the OpenMetrics EXPOSITION
+// encoder (prometheus/common expfmt/openmetrics_create.go), which trims the
+// suffix for the TYPE/HELP family name and re-appends it on the sample line.
+// That is rendering, not identity.
+//
+// Canonicalizing here would make these two share one shape record, so
+// registerOrExisting would hand a caller asking for `jobs_total` the `jobs`
+// collector -- a silent wrong-metric bug, strictly worse than the panic it
+// would avoid.
+func TestCounterNamesAreNotNormalizedByTotalSuffix(t *testing.T) {
+	r := NewRegistry("")
+
+	plain := r.Counter("zz_jobs").Help("h").Build()
+	total := r.Counter("zz_jobs_total").Help("h").Build()
+
+	if plain == total {
+		t.Fatal("`jobs` and `jobs_total` returned the same collector; the suffix was canonicalized away")
+	}
+
+	plain.Add(2)
+	total.Add(5)
+
+	if got := readCounter(t, plain); got != 2 {
+		t.Errorf("zz_jobs = %v, want 2", got)
+	}
+	if got := readCounter(t, total); got != 5 {
+		t.Errorf("zz_jobs_total = %v, want 5; the two counters share storage", got)
+	}
+
+	// And asking again for each name returns its own collector, not the other.
+	if again := r.Counter("zz_jobs_total").Help("h").Build(); again != total {
+		t.Error("re-requesting zz_jobs_total did not return the collector registered under that name")
+	}
+}
+
+func readCounter(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
 }
