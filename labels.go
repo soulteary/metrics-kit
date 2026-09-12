@@ -71,27 +71,25 @@ var pathSegmentID = regexp.MustCompile(`^(` +
 var pathSegmentToken = regexp.MustCompile(`^[A-Za-z0-9_-]{21,22}$`)
 
 // looksLikeGeneratedToken reports whether seg has the shape of a generated
-// URL-safe identifier. Requires a digit and an uppercase letter, which at
-// least excludes hyphenated lowercase names like /forgot-password-reset.
+// URL-safe identifier: 21 or 22 characters of [A-Za-z0-9_-].
 //
-// Deliberately still a guess -- see pathSegmentToken. It is the caller of
-// PathNormalizeWithTokens who knows their own routes and can accept it.
+// That IS the whole shape, and the whole guess. An earlier version also
+// demanded a digit and an uppercase letter, which was a leftover from when
+// this ran by default and had to avoid swallowing names like
+// /forgot-password-reset. As an opt-in it only made the guess quietly
+// incomplete: 2.8% of random 21-character tokens contain no digit and were
+// left to create a series each -- measured over 300k samples of nanoid's
+// alphabet, and the reason the uppercase half never mattered is that missing
+// one is a 0.002% event. It filtered out 2.8% of real ids to exclude route
+// names it could not reliably exclude anyway.
+//
+// So the opt-in matches the shape and says so. A caller enabling
+// PathNormalizeWithTokens is accepting that ANY 21-22 character URL-safe
+// segment normalizes, /forgot-password-reset included, and has checked their
+// route table for one. Where the ids have a known exact form, a custom
+// PathTransformFunc matching it precisely beats any guess.
 func looksLikeGeneratedToken(seg string) bool {
-	if !pathSegmentToken.MatchString(seg) {
-		return false
-	}
-
-	var hasDigit, hasUpper bool
-	for i := 0; i < len(seg); i++ {
-		switch {
-		case seg[i] >= '0' && seg[i] <= '9':
-			hasDigit = true
-		case seg[i] >= 'A' && seg[i] <= 'Z':
-			hasUpper = true
-		}
-	}
-
-	return hasDigit && hasUpper
+	return pathSegmentToken.MatchString(seg)
 }
 
 // DefaultPathNormalize normalizes request paths for use as metric labels to avoid cardinality explosion.
@@ -111,13 +109,16 @@ func DefaultPathNormalize(path string) string {
 }
 
 // PathNormalizeWithTokens is DefaultPathNormalize plus a guess at nanoid- and
-// base64url-shaped segments: 21 or 22 URL-safe characters carrying at least
-// one digit and one uppercase letter.
+// base64url-shaped segments: ANY 21 or 22 characters of [A-Za-z0-9_-].
 //
 // Use it when your paths carry ids of that shape AND no static route of yours
-// looks like one -- it cannot tell the difference, and a wrong guess merges a
-// real endpoint into /:id, destroying its metrics silently. Check it against
-// your route table before turning it on.
+// is 21-22 URL-safe characters -- it cannot tell the difference, and a wrong
+// guess merges a real endpoint into /:id, destroying its metrics silently.
+// /forgot-password-reset is exactly 21, so check your route table before
+// turning this on.
+//
+// Where the ids have a known exact form, a custom PathTransformFunc matching
+// it precisely beats this guess in both directions.
 func PathNormalizeWithTokens(path string) string {
 	return normalizePath(path, true)
 }

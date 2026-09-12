@@ -1123,3 +1123,50 @@ func TestULIDPatternAcceptsEitherCase(t *testing.T) {
 		})
 	}
 }
+
+// --- Codex review round 12 (PR #4) ---
+
+// TestOptInTokensMatchTheWholeShape is the regression test for the opt-in
+// carrying a leftover digit/uppercase filter.
+//
+// The filter existed when this ran by DEFAULT and had to avoid swallowing
+// names like /forgot-password-reset. As an opt-in it only made the guess
+// quietly incomplete: a valid token with no digit -- 2.8% of random
+// 21-character values over nanoid's alphabet, measured across 300k samples --
+// was left to create a path-label series each, which is the cardinality leak
+// the mode exists to close.
+func TestOptInTokensMatchTheWholeShape(t *testing.T) {
+	for _, token := range []string{
+		"VStGXRQ_ZAjdHiKB-myTP",  // no digit: the reported case
+		"abcdefghjkmnpqrstuvwx",  // no digit, no uppercase
+		"V1StGXR8_Z5jdHi6B-myT",  // the nanoid documentation example
+		"ku2mS3rN8pQ7wX1zT4vB9d", // 22 characters
+	} {
+		t.Run(token, func(t *testing.T) {
+			if got := PathNormalizeWithTokens("/sessions/" + token); got != "/sessions/:id" {
+				t.Errorf("PathNormalizeWithTokens(/sessions/%s) = %q, want /sessions/:id", token, got)
+			}
+		})
+	}
+}
+
+// TestOptInTokensNowCatchRouteNamesToo pins the cost of that widening, so it
+// is a stated property rather than a surprise: the opt-in matches ANY 21-22
+// character URL-safe segment, route names included. The DEFAULT must still
+// leave every one of them alone.
+func TestOptInTokensNowCatchRouteNamesToo(t *testing.T) {
+	for _, path := range []string{
+		"/forgot-password-reset",  // exactly 21
+		"/oauth2CallbackHandler",  // 21
+		"/s3ToS3CopyHandlerV2Job", // 22
+	} {
+		t.Run(path, func(t *testing.T) {
+			if got := PathNormalizeWithTokens(path); got != "/:id" {
+				t.Errorf("PathNormalizeWithTokens(%q) = %q, want /:id -- the opt-in matches the shape, nothing more", path, got)
+			}
+			if got := DefaultPathNormalize(path); got != path {
+				t.Errorf("DefaultPathNormalize(%q) = %q, want it left alone", path, got)
+			}
+		})
+	}
+}
