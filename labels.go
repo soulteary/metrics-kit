@@ -48,86 +48,82 @@ var pathSegmentID = regexp.MustCompile(`^(` +
 // pathSegmentToken matches a 21- or 22-character URL-safe segment -- the shape
 // of a nanoid or a base64url-encoded 16-byte token.
 //
-// Length alone is not a discriminator: /forgot-password-reset is exactly 21
-// URL-safe characters. Neither is "contains a digit and an uppercase letter":
-// /oauth2CallbackHandler is 21 characters and satisfies both, and normalising
-// a static route to /:id merges it with unrelated endpoints and corrupts their
-// request counts and latencies. See looksLikeGeneratedToken for the test that
-// separates them.
+// This is a GUESS, and it is only reached through PathNormalizeWithTokens.
+// Nothing reliably separates such a token from a route NAME of the same
+// length: both draw on the same alphabet, and three successive attempts to
+// find a discriminator each fell to an ordinary endpoint.
+//
+//   - length alone: /forgot-password-reset is exactly 21 URL-safe characters
+//   - plus a digit and an uppercase letter: /oauth2CallbackHandler satisfies both
+//   - plus a class-transition threshold: /s3ToS3CopyHandlerV2Job crosses it,
+//     because acronym-heavy camel case mixes classes as briskly as random text
+//
+// The two failure modes are not symmetric. Missing a token costs one extra
+// series for one route. A false positive silently merges real endpoints into
+// /:id, destroying their own request counts and latency histograms and
+// polluting whatever they merge into -- and nothing in the metrics says it
+// happened. That is why the default no longer guesses.
 var pathSegmentToken = regexp.MustCompile(`^[A-Za-z0-9_-]{21,22}$`)
 
-// charClass groups a byte of the URL-safe alphabet: lowercase, uppercase,
-// digit, or the two symbols. The segment is ASCII by construction, so the
-// callers can index it bytewise.
-func charClass(b byte) int {
-	switch {
-	case b >= 'a' && b <= 'z':
-		return 0
-	case b >= 'A' && b <= 'Z':
-		return 1
-	case b >= '0' && b <= '9':
-		return 2
-	default:
-		return 3
-	}
-}
-
 // looksLikeGeneratedToken reports whether seg has the shape of a generated
-// URL-safe identifier rather than a route name.
+// URL-safe identifier. Requires a digit and an uppercase letter, which at
+// least excludes hyphenated lowercase names like /forgot-password-reset.
 //
-// The discriminator is how OFTEN the character class changes. A name is built
-// from words, and a word is a run of one class: /oauth2CallbackHandler changes
-// class 5 times in 21 characters, /s3BucketAccessPolicy1 8 times. A token
-// drawn uniformly from a 64-symbol alphabet changes on roughly two thirds of
-// adjacent pairs -- about 13 times -- because nothing keeps a class going.
-// Requiring at least HALF the pairs to cross a class boundary is a gap no
-// readable name closes: it would need words averaging two characters.
-//
-// A digit and an uppercase letter are still required, which is what excludes
-// hyphenated lowercase names like /forgot-password-reset cheaply.
-//
-// This matches ~90% of random tokens. The residue is the deliberate side to
-// miss on: an unmatched token costs one extra series, while a false positive
-// silently merges real routes and corrupts the series they already have.
+// Deliberately still a guess -- see pathSegmentToken. It is the caller of
+// PathNormalizeWithTokens who knows their own routes and can accept it.
 func looksLikeGeneratedToken(seg string) bool {
 	if !pathSegmentToken.MatchString(seg) {
 		return false
 	}
 
 	var hasDigit, hasUpper bool
-	transitions, previous := 0, -1
 	for i := 0; i < len(seg); i++ {
-		class := charClass(seg[i])
-		switch class {
-		case 1:
-			hasUpper = true
-		case 2:
+		switch {
+		case seg[i] >= '0' && seg[i] <= '9':
 			hasDigit = true
+		case seg[i] >= 'A' && seg[i] <= 'Z':
+			hasUpper = true
 		}
-		if i > 0 && class != previous {
-			transitions++
-		}
-		previous = class
-	}
-	if !hasDigit || !hasUpper {
-		return false
 	}
 
-	// At least half of the len(seg)-1 adjacent pairs cross a class boundary.
-	return transitions*2 >= len(seg)-1
+	return hasDigit && hasUpper
 }
 
 // DefaultPathNormalize normalizes request paths for use as metric labels to avoid cardinality explosion.
 // It replaces numeric and UUID-like path segments with ":id", e.g. /users/123 -> /users/:id,
 // /items/550e8400-e29b-41d4-a716-446655440000 -> /items/:id.
 // Use this as PathTransformFunc in production so each distinct ID does not create a new time series.
+//
+// Only UNAMBIGUOUS id shapes are replaced: all-digit segments, UUIDs, long hex
+// strings and ULIDs. None of them can be mistaken for a route name.
+//
+// Segments that merely look random -- a nanoid, a base64url token -- are left
+// alone, because nothing separates one from a route name of the same length
+// (see pathSegmentToken). If your routes carry such ids, use
+// PathNormalizeWithTokens and check it against your own route table.
 func DefaultPathNormalize(path string) string {
+	return normalizePath(path, false)
+}
+
+// PathNormalizeWithTokens is DefaultPathNormalize plus a guess at nanoid- and
+// base64url-shaped segments: 21 or 22 URL-safe characters carrying at least
+// one digit and one uppercase letter.
+//
+// Use it when your paths carry ids of that shape AND no static route of yours
+// looks like one -- it cannot tell the difference, and a wrong guess merges a
+// real endpoint into /:id, destroying its metrics silently. Check it against
+// your route table before turning it on.
+func PathNormalizeWithTokens(path string) string {
+	return normalizePath(path, true)
+}
+
+func normalizePath(path string, guessTokens bool) string {
 	if path == "" || path == "/" {
 		return path
 	}
 	segments := strings.Split(strings.Trim(path, "/"), "/")
 	for i, seg := range segments {
-		if pathSegmentID.MatchString(seg) || looksLikeGeneratedToken(seg) {
+		if pathSegmentID.MatchString(seg) || (guessTokens && looksLikeGeneratedToken(seg)) {
 			segments[i] = ":id"
 		}
 	}

@@ -59,7 +59,6 @@ func TestPathNormalizeCoversCommonIDShapes(t *testing.T) {
 		"/o/507f1f77bcf86cd799439011":                 "/o/:id", // 24-char hex (ObjectID)
 		"/t/0123456789abcdef":                         "/t/:id", // 16-char hex (64-bit id)
 		"/e/01ARZ3NDEKTSV4RRFFQ69G5FAV":               "/e/:id", // ULID
-		"/s/V1StGXR8_Z5jdHi6B-myT":                    "/s/:id", // nanoid
 		"/health":                                     "/health",
 		"/api/v1/users":                               "/api/v1/users",
 		"/":                                           "/",
@@ -68,6 +67,12 @@ func TestPathNormalizeCoversCommonIDShapes(t *testing.T) {
 		if got := DefaultPathNormalize(in); got != want {
 			t.Errorf("DefaultPathNormalize(%q) = %q, want %q", in, got, want)
 		}
+	}
+
+	// A nanoid is only a GUESS -- indistinguishable from a route name of the
+	// same length -- so it belongs to the opt-in normalizer, not the default.
+	if got := PathNormalizeWithTokens("/s/V1StGXR8_Z5jdHi6B-myT"); got != "/s/:id" {
+		t.Errorf("PathNormalizeWithTokens(nanoid) = %q, want /s/:id", got)
 	}
 }
 
@@ -194,16 +199,25 @@ func TestStaticRoutesAreNotMistakenForTokens(t *testing.T) {
 		}
 	}
 
-	// Real generated tokens are still normalised.
-	tokens := map[string]string{
-		"/s/V1StGXR8_Z5jdHi6B-myT":                    "/s/:id",
-		"/t/Uakgb1J5m9AI0EoMlqbP7":                    "/t/:id",
-		"/users/123":                                  "/users/:id",
+	// Unambiguous ids are still normalised by the default.
+	ids := map[string]string{
+		"/users/123": "/users/:id",
 		"/items/550e8400-e29b-41d4-a716-446655440000": "/items/:id",
 	}
-	for in, want := range tokens {
+	for in, want := range ids {
 		if got := DefaultPathNormalize(in); got != want {
 			t.Errorf("DefaultPathNormalize(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	// Generated tokens are a guess, so they moved to the opt-in normalizer.
+	tokens := map[string]string{
+		"/s/V1StGXR8_Z5jdHi6B-myT": "/s/:id",
+		"/t/Uakgb1J5m9AI0EoMlqbP7": "/t/:id",
+	}
+	for in, want := range tokens {
+		if got := PathNormalizeWithTokens(in); got != want {
+			t.Errorf("PathNormalizeWithTokens(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -667,6 +681,7 @@ func TestPathNormalizeKeepsVersionedCamelCaseRoutes(t *testing.T) {
 
 		// The same shape at other word boundaries.
 		"/s3BucketAccessPolicy1",
+		"/s3ToS3CopyHandlerV2Job",
 		"/v2ProductCategoryList",
 		"/internalV2ServiceName",
 		"/apiV2GatewayHandlerX1",
@@ -683,9 +698,9 @@ func TestPathNormalizeKeepsVersionedCamelCaseRoutes(t *testing.T) {
 	}
 }
 
-// TestPathNormalizeStillMatchesGeneratedTokens: the fix must not buy its
-// precision by giving up on the tokens the rule exists for.
-func TestPathNormalizeStillMatchesGeneratedTokens(t *testing.T) {
+// TestPathNormalizeWithTokensMatchesGeneratedTokens: the guess still works for
+// callers who opt into it.
+func TestPathNormalizeWithTokensMatchesGeneratedTokens(t *testing.T) {
 	for _, token := range []string{
 		"V1StGXR8_Z5jdHi6B-myT",  // the nanoid documentation's own example
 		"ku2mS3rN8pQ7wX1zT4vB9d", // 22-character nanoid
@@ -693,8 +708,54 @@ func TestPathNormalizeStillMatchesGeneratedTokens(t *testing.T) {
 		"3B9xK-2mQvR7tZ1nW4pLs", // base64url-shaped
 	} {
 		t.Run(token, func(t *testing.T) {
-			if got := DefaultPathNormalize("/sessions/" + token); got != "/sessions/:id" {
-				t.Errorf("DefaultPathNormalize(/sessions/%s) = %q, want /sessions/:id", token, got)
+			if got := PathNormalizeWithTokens("/sessions/" + token); got != "/sessions/:id" {
+				t.Errorf("PathNormalizeWithTokens(/sessions/%s) = %q, want /sessions/:id", token, got)
+			}
+		})
+	}
+}
+
+// --- Codex review round 7 (PR #4) ---
+
+// TestDefaultPathNormalizeDoesNotGuess is the regression test for the token
+// heuristic living in the DEFAULT normalizer.
+//
+// Three successive discriminators each fell to an ordinary endpoint --
+// /forgot-password-reset to length, /oauth2CallbackHandler to "digit and
+// uppercase", /s3ToS3CopyHandlerV2Job to the class-transition threshold,
+// because acronym-heavy camel case mixes classes as briskly as random text.
+// Nothing separates a 21-character token from a 21-character route name, so
+// the default stopped guessing: an unmatched token costs one extra series,
+// while a false positive silently destroys a real endpoint's metrics.
+func TestDefaultPathNormalizeDoesNotGuess(t *testing.T) {
+	for _, path := range []string{
+		"/s3ToS3CopyHandlerV2Job",
+		"/oauth2CallbackHandler",
+		"/v2ProductCategoryList",
+		"/V1StGXR8_Z5jdHi6B-myT", // a real nanoid: left alone too, deliberately
+	} {
+		t.Run(path, func(t *testing.T) {
+			if got := DefaultPathNormalize(path); got != path {
+				t.Errorf("DefaultPathNormalize(%q) = %q, want it left alone: the default must not guess", path, got)
+			}
+		})
+	}
+}
+
+// TestDefaultPathNormalizeStillReplacesUnambiguousIDs: dropping the guess must
+// not weaken the shapes that ARE unambiguous, which is the whole point of the
+// function.
+func TestDefaultPathNormalizeStillReplacesUnambiguousIDs(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"/users/123", "/users/:id"},
+		{"/items/550e8400-e29b-41d4-a716-446655440000", "/items/:id"},
+		{"/t/01ARZ3NDEKTSV4RRFFQ69G5FAV", "/t/:id"}, // ULID
+		{"/s/deadbeefcafebabe", "/s/:id"},           // 64-bit hex
+		{"/a/1/b/2", "/a/:id/b/:id"},                // every segment
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			if got := DefaultPathNormalize(tc.path); got != tc.want {
+				t.Errorf("DefaultPathNormalize(%q) = %q, want %q", tc.path, got, tc.want)
 			}
 		})
 	}
