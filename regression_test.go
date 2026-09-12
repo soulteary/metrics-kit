@@ -649,3 +649,53 @@ func TestScalarAndZeroLabelVectorAreNotReused(t *testing.T) {
 		})
 	}
 }
+
+// --- Codex review round 6 (PR #4) ---
+
+// TestPathNormalizeKeepsVersionedCamelCaseRoutes is the regression test for
+// the token heuristic matching ordinary static routes.
+//
+// /oauth2CallbackHandler is 21 URL-safe characters and contains both a digit
+// and an uppercase letter, so "length + one digit + one uppercase" classified
+// it as a generated id. Every request to it was then counted under /:id,
+// merged with unrelated ID-based routes -- its own request count and latency
+// histogram gone, and theirs polluted.
+func TestPathNormalizeKeepsVersionedCamelCaseRoutes(t *testing.T) {
+	for _, path := range []string{
+		// The reported case.
+		"/oauth2CallbackHandler",
+
+		// The same shape at other word boundaries.
+		"/s3BucketAccessPolicy1",
+		"/v2ProductCategoryList",
+		"/internalV2ServiceName",
+		"/apiV2GatewayHandlerX1",
+
+		// Hyphenated names, which the digit/uppercase test already excluded.
+		"/forgot-password-reset",
+		"/reset-password-confirm",
+	} {
+		t.Run(path, func(t *testing.T) {
+			if got := DefaultPathNormalize(path); got != path {
+				t.Errorf("DefaultPathNormalize(%q) = %q, want it left alone: a static route merged into the id series", path, got)
+			}
+		})
+	}
+}
+
+// TestPathNormalizeStillMatchesGeneratedTokens: the fix must not buy its
+// precision by giving up on the tokens the rule exists for.
+func TestPathNormalizeStillMatchesGeneratedTokens(t *testing.T) {
+	for _, token := range []string{
+		"V1StGXR8_Z5jdHi6B-myT",  // the nanoid documentation's own example
+		"ku2mS3rN8pQ7wX1zT4vB9d", // 22-character nanoid
+		"IkoT4nDaWtFGjPcnzsZ-e",
+		"3B9xK-2mQvR7tZ1nW4pLs", // base64url-shaped
+	} {
+		t.Run(token, func(t *testing.T) {
+			if got := DefaultPathNormalize("/sessions/" + token); got != "/sessions/:id" {
+				t.Errorf("DefaultPathNormalize(/sessions/%s) = %q, want /sessions/:id", token, got)
+			}
+		})
+	}
+}

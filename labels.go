@@ -49,30 +49,72 @@ var pathSegmentID = regexp.MustCompile(`^(` +
 // of a nanoid or a base64url-encoded 16-byte token.
 //
 // Length alone is not a discriminator: /forgot-password-reset is exactly 21
-// URL-safe characters, and normalising a static route to /:id merges it with
-// unrelated endpoints and corrupts their request counts and latencies. A
-// generated token over this alphabet practically always mixes character
-// classes, so at least one digit AND one uppercase letter are required. The
-// trade is deliberate: missing a token costs one extra series, while a false
-// positive silently merges real routes.
+// URL-safe characters. Neither is "contains a digit and an uppercase letter":
+// /oauth2CallbackHandler is 21 characters and satisfies both, and normalising
+// a static route to /:id merges it with unrelated endpoints and corrupts their
+// request counts and latencies. See looksLikeGeneratedToken for the test that
+// separates them.
 var pathSegmentToken = regexp.MustCompile(`^[A-Za-z0-9_-]{21,22}$`)
 
+// charClass groups a byte of the URL-safe alphabet: lowercase, uppercase,
+// digit, or the two symbols. The segment is ASCII by construction, so the
+// callers can index it bytewise.
+func charClass(b byte) int {
+	switch {
+	case b >= 'a' && b <= 'z':
+		return 0
+	case b >= 'A' && b <= 'Z':
+		return 1
+	case b >= '0' && b <= '9':
+		return 2
+	default:
+		return 3
+	}
+}
+
 // looksLikeGeneratedToken reports whether seg has the shape of a generated
-// URL-safe identifier rather than a hyphenated word.
+// URL-safe identifier rather than a route name.
+//
+// The discriminator is how OFTEN the character class changes. A name is built
+// from words, and a word is a run of one class: /oauth2CallbackHandler changes
+// class 5 times in 21 characters, /s3BucketAccessPolicy1 8 times. A token
+// drawn uniformly from a 64-symbol alphabet changes on roughly two thirds of
+// adjacent pairs -- about 13 times -- because nothing keeps a class going.
+// Requiring at least HALF the pairs to cross a class boundary is a gap no
+// readable name closes: it would need words averaging two characters.
+//
+// A digit and an uppercase letter are still required, which is what excludes
+// hyphenated lowercase names like /forgot-password-reset cheaply.
+//
+// This matches ~90% of random tokens. The residue is the deliberate side to
+// miss on: an unmatched token costs one extra series, while a false positive
+// silently merges real routes and corrupts the series they already have.
 func looksLikeGeneratedToken(seg string) bool {
 	if !pathSegmentToken.MatchString(seg) {
 		return false
 	}
+
 	var hasDigit, hasUpper bool
-	for _, r := range seg {
-		switch {
-		case r >= '0' && r <= '9':
-			hasDigit = true
-		case r >= 'A' && r <= 'Z':
+	transitions, previous := 0, -1
+	for i := 0; i < len(seg); i++ {
+		class := charClass(seg[i])
+		switch class {
+		case 1:
 			hasUpper = true
+		case 2:
+			hasDigit = true
 		}
+		if i > 0 && class != previous {
+			transitions++
+		}
+		previous = class
 	}
-	return hasDigit && hasUpper
+	if !hasDigit || !hasUpper {
+		return false
+	}
+
+	// At least half of the len(seg)-1 adjacent pairs cross a class boundary.
+	return transitions*2 >= len(seg)-1
 }
 
 // DefaultPathNormalize normalizes request paths for use as metric labels to avoid cardinality explosion.
