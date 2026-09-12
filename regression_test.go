@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -877,4 +878,66 @@ func readCounter(t *testing.T, c prometheus.Counter) float64 {
 		t.Fatal(err)
 	}
 	return m.GetCounter().GetValue()
+}
+
+// --- Codex review round 9 (PR #4) ---
+
+// TestReplacedDefaultRegistriesAreCollectible is the regression test for the
+// shape cache keying registries strongly.
+//
+// prometheus.DefaultRegisterer is an exported mutable global and is routinely
+// replaced -- per-test isolation, reinitialisation -- and every DefaultRegistry()
+// call inserted a permanent entry keyed by the registry, which retains its
+// collectors. Restoring or replacing the global freed nothing, so repeated
+// replacement grew without bound. Narrowing the cache to the default registry
+// bounded WHICH registries got in, not how many.
+func TestReplacedDefaultRegistriesAreCollectible(t *testing.T) {
+	countEntries := func() int {
+		n := 0
+		shapeStores.Range(func(_, _ any) bool { n++; return true })
+		return n
+	}
+
+	before := countEntries()
+
+	// A registry nobody else holds, exactly as a replaced global becomes once
+	// the next replacement lands.
+	func() {
+		reg := prometheus.NewRegistry()
+		if stateFor(reg) == nil {
+			t.Fatal("stateFor returned nil")
+		}
+		if stateFor(reg) != stateFor(reg) {
+			t.Fatal("stateFor is not stable for one registry")
+		}
+	}()
+
+	// Collect, then force the miss path so the sweep runs.
+	var after int
+	for i := 0; i < 50; i++ {
+		runtime.GC()
+		stateFor(prometheus.NewRegistry())
+		if after = countEntries(); after <= before+1 {
+			break
+		}
+	}
+	if after > before+1 {
+		t.Errorf("shape store holds %d entries, started at %d: collected registries are still retained", after, before)
+	}
+}
+
+// TestShapeStateSurvivesSwapAndRestore: a registry that is still ALIVE must
+// keep its recorded shapes, which is what a single-slot cache would lose when
+// the global is swapped away and back.
+func TestShapeStateSurvivesSwapAndRestore(t *testing.T) {
+	original := prometheus.NewRegistry()
+	other := prometheus.NewRegistry()
+
+	first := stateFor(original)
+	stateFor(other) // the global is replaced...
+	restored := stateFor(original)
+
+	if restored != first {
+		t.Error("swapping the default registry away and back discarded the original's recorded shapes")
+	}
 }

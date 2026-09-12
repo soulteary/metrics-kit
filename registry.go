@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"weak"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -90,17 +91,43 @@ func newRegistryState() *registryState {
 // through here instead added a permanent entry -- keyed by the registry, which
 // retains its collectors -- for every registry a test, a reload or a repeated
 // middleware construction ever created, and nothing removed them.
-var shapeStores sync.Map // *prometheus.Registry -> *registryState
+// Keyed WEAKLY. prometheus.DefaultRegisterer is an exported mutable global and
+// is routinely replaced -- per-test isolation, reinitialisation -- so a strong
+// key made every registry the global ever held permanently reachable, along
+// with every collector in it. Restoring or replacing the global freed nothing
+// and repeated replacement grew without bound.
+//
+// A weak key lets a registry nobody else holds be collected, and keeps its
+// state for exactly as long as the registry itself lives -- so swapping the
+// global away and back preserves the shapes recorded for the original, which
+// a single-slot cache would have discarded.
+var shapeStores sync.Map // weak.Pointer[prometheus.Registry] -> *registryState
 
 // stateFor returns the shared state for a registry owned elsewhere, creating
-// it on first use. The entry is permanent, which is why this is reserved for
-// process-global registries.
+// it on first use.
 func stateFor(reg *prometheus.Registry) *registryState {
-	if existing, ok := shapeStores.Load(reg); ok {
+	key := weak.Make(reg)
+	if existing, ok := shapeStores.Load(key); ok {
 		return existing.(*registryState)
 	}
-	actual, _ := shapeStores.LoadOrStore(reg, newRegistryState())
+
+	// Only on the miss path: the hit path is every metric build.
+	pruneCollectedShapeStores()
+
+	actual, _ := shapeStores.LoadOrStore(key, newRegistryState())
 	return actual.(*registryState)
+}
+
+// pruneCollectedShapeStores drops the entries of registries that have been
+// garbage collected. Without it the weak keys themselves would accumulate --
+// smaller than the registries they used to retain, but still unbounded.
+func pruneCollectedShapeStores() {
+	shapeStores.Range(func(key, _ any) bool {
+		if key.(weak.Pointer[prometheus.Registry]).Value() == nil {
+			shapeStores.Delete(key)
+		}
+		return true
+	})
 }
 
 // NewRegistry creates a new Registry with the given namespace.
