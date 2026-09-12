@@ -942,3 +942,109 @@ func TestShapeStateSurvivesSwapAndRestore(t *testing.T) {
 		t.Error("swapping the default registry away and back discarded the original's recorded shapes")
 	}
 }
+
+// --- Codex review round 10 (PR #4) ---
+
+// TestDefaultWrappersOwnTheirNamedRegistrations is the regression test for
+// sharing the whole state between DefaultRegistry() wrappers.
+//
+// Shapes must be shared -- they describe what is registered in the underlying
+// registry, so two wrappers have to see each other's. Named registrations are
+// the opposite: they are per-wrapper ownership. Sharing that map made a second
+// wrapper's Register("x", …) overwrite the first's entry, so the FIRST
+// wrapper's Unregister("x") removed the SECOND wrapper's collector and left
+// its own registered.
+func TestDefaultWrappersOwnTheirNamedRegistrations(t *testing.T) {
+	saved := prometheus.DefaultRegisterer
+	t.Cleanup(func() { prometheus.DefaultRegisterer = saved })
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+
+	w1, w2 := DefaultRegistry(), DefaultRegistry()
+
+	c1 := prometheus.NewCounter(prometheus.CounterOpts{Name: "zz_own_one", Help: "h"})
+	c2 := prometheus.NewCounter(prometheus.CounterOpts{Name: "zz_own_two", Help: "h"})
+
+	if err := w1.Register("shared-name", c1); err != nil {
+		t.Fatalf("w1.Register = %v", err)
+	}
+	if err := w2.Register("shared-name", c2); err != nil {
+		t.Fatalf("w2.Register = %v", err)
+	}
+
+	// w1 removes what IT registered, and only that.
+	if !w1.Unregister("shared-name") {
+		t.Fatal("w1.Unregister reported nothing to remove")
+	}
+
+	underlying := prometheus.DefaultRegisterer.(*prometheus.Registry)
+	if underlying.Unregister(c1) {
+		t.Error("w1.Unregister left its own collector registered")
+	}
+	if !underlying.Unregister(c2) {
+		t.Error("w1.Unregister removed the OTHER wrapper's collector")
+	}
+}
+
+// TestWithSubsystemSharesNamedRegistrations: a derived view is the same
+// wrapper seen through another prefix, so it must keep sharing ownership --
+// the property the split must not break.
+func TestWithSubsystemSharesNamedRegistrations(t *testing.T) {
+	r := NewRegistry("zz")
+	derived := r.WithSubsystem("sub")
+
+	c := prometheus.NewCounter(prometheus.CounterOpts{Name: "zz_sub_shared", Help: "h"})
+	if err := r.Register("name", c); err != nil {
+		t.Fatal(err)
+	}
+	if !derived.Unregister("name") {
+		t.Error("a WithSubsystem view could not unregister what its parent registered")
+	}
+}
+
+// TestUnregisterReleasesShapeRecords is the regression test for shapeRecord
+// holding its collector strongly with nothing ever removing it.
+//
+// Creating and removing uniquely named vectors retained every one of them,
+// label children included, for the registry's lifetime -- keying the outer
+// registry cache weakly does nothing while that registry is alive.
+func TestUnregisterReleasesShapeRecords(t *testing.T) {
+	r := NewRegistry("zz")
+
+	countShapes := func() int {
+		r.state.mu.Lock()
+		defer r.state.mu.Unlock()
+		return len(r.state.shapes)
+	}
+
+	before := countShapes()
+	vec := r.Counter("zz_released").Help("h").Labels("a").BuildVec()
+	if countShapes() != before+1 {
+		t.Fatalf("shapes = %d, want %d after building one vector", countShapes(), before+1)
+	}
+
+	// The builder already registered it, so Register(name, vec) would be a
+	// duplicate: UnregisterCollector is the path for a built collector.
+	if !r.UnregisterCollector(vec) {
+		t.Fatal("UnregisterCollector reported nothing to remove")
+	}
+
+	if got := countShapes(); got != before {
+		t.Errorf("shapes = %d after unregistering, want %d: the record still holds the collector", got, before)
+	}
+
+	// Unregistering again reports false and changes nothing.
+	if r.UnregisterCollector(vec) {
+		t.Error("UnregisterCollector reported a second removal")
+	}
+
+	// Rebuilding registers a FRESH collector rather than handing back the
+	// departed one. Note the labels must match: client_golang keeps
+	// dimHashesByName for the life of the process on purpose ("must be
+	// consistent throughout the lifetime of a program"), so re-registering
+	// this name with different label names panics inside Prometheus whatever
+	// this package does.
+	replacement := r.Counter("zz_released").Help("h").Labels("a").BuildVec()
+	if replacement == vec {
+		t.Error("rebuilding after unregistration returned the departed collector")
+	}
+}

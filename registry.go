@@ -29,8 +29,28 @@ type Registry struct {
 	// subsystem is an optional subsystem name (e.g., "otp", "auth", "cache")
 	subsystem string
 
-	// state is the mutable state shared with every WithSubsystem view.
+	// state is the SHAPE state, shared by every wrapper over one underlying
+	// registry -- shapes describe what is registered there, so two wrappers
+	// must see each other's.
 	state *registryState
+
+	// owned is the named-registration state of THIS wrapper and the
+	// WithSubsystem views derived from it, and of nothing else. Register and
+	// Unregister are per-wrapper ownership: two independently obtained
+	// DefaultRegistry() wrappers that share one map overwrite each other's
+	// entries, and then one wrapper's Unregister removes the OTHER's
+	// collector while leaving its own registered.
+	owned *ownedCollectors
+}
+
+// ownedCollectors tracks the collectors one wrapper lineage registered by name.
+type ownedCollectors struct {
+	mu         sync.Mutex
+	collectors map[string]prometheus.Collector
+}
+
+func newOwnedCollectors() *ownedCollectors {
+	return &ownedCollectors{collectors: make(map[string]prometheus.Collector)}
 }
 
 // registryState is the mutable state a Registry shares with the views derived
@@ -43,9 +63,6 @@ type Registry struct {
 // could kill the process with "concurrent map writes".
 type registryState struct {
 	mu sync.RWMutex
-
-	// collectors tracks registered collectors for Reset/Unregister
-	collectors map[string]prometheus.Collector
 
 	// shapes records, per metric id, the configuration Prometheus does not
 	// treat as part of a collector's identity -- the collector KIND, label
@@ -71,10 +88,7 @@ type shapeRecord struct {
 
 // newRegistryState allocates state for a registry this package owns.
 func newRegistryState() *registryState {
-	return &registryState{
-		collectors: make(map[string]prometheus.Collector),
-		shapes:     make(map[string]shapeRecord),
-	}
+	return &registryState{shapes: make(map[string]shapeRecord)}
 }
 
 // shapeStores maps a registry this package does NOT own to its shape records.
@@ -137,6 +151,7 @@ func NewRegistry(namespace string) *Registry {
 		registry:  prometheus.NewRegistry(),
 		namespace: namespace,
 		state:     newRegistryState(),
+		owned:     newOwnedCollectors(),
 	}
 }
 
@@ -147,6 +162,7 @@ func NewRegistryWithSubsystem(namespace, subsystem string) *Registry {
 		namespace: namespace,
 		subsystem: subsystem,
 		state:     newRegistryState(),
+		owned:     newOwnedCollectors(),
 	}
 }
 
@@ -157,6 +173,9 @@ func DefaultRegistry() *Registry {
 		registry:  reg,
 		namespace: "",
 		state:     stateFor(reg),
+		// A FRESH owned map: two DefaultRegistry() calls are separate
+		// wrappers and must not share named registrations.
+		owned: newOwnedCollectors(),
 	}
 }
 
@@ -177,9 +196,12 @@ func (r *Registry) WithSubsystem(subsystem string) *Registry {
 		registry:  r.registry,
 		namespace: r.namespace,
 		subsystem: subsystem,
-		// The whole state, mutex included: a derived registry writes into the
-		// SAME prometheus.Registry and the same maps.
+		// Both, mutexes included: a derived registry writes into the SAME
+		// prometheus.Registry, and a WithSubsystem view is the same wrapper
+		// seen through a different prefix -- so its named registrations
+		// belong to the same owner, unlike a separately obtained wrapper.
 		state: r.state,
+		owned: r.owned,
 	}
 }
 
@@ -193,7 +215,9 @@ func (r *Registry) Register(name string, collector prometheus.Collector) error {
 		return err
 	}
 
-	r.state.collectors[name] = collector
+	r.owned.mu.Lock()
+	r.owned.collectors[name] = collector
+	r.owned.mu.Unlock()
 	return nil
 }
 
@@ -432,19 +456,71 @@ func objectiveShape(objectives map[float64]float64) string {
 
 // Unregister removes a collector from the registry.
 func (r *Registry) Unregister(name string) bool {
-	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
-
-	collector, ok := r.state.collectors[name]
+	r.owned.mu.Lock()
+	collector, ok := r.owned.collectors[name]
+	r.owned.mu.Unlock()
 	if !ok {
 		return false
 	}
 
-	if r.registry.Unregister(collector) {
-		delete(r.state.collectors, name)
-		return true
+	if !r.registry.Unregister(collector) {
+		return false
 	}
-	return false
+
+	r.owned.mu.Lock()
+	delete(r.owned.collectors, name)
+	r.owned.mu.Unlock()
+
+	r.releaseShapes(collector)
+	return true
+}
+
+// UnregisterCollector removes a collector from the underlying registry and
+// releases the shape records it owned. It reports whether the collector was
+// registered.
+//
+// This is the path for a collector a BUILDER produced. Register/Unregister
+// track collectors by a caller-chosen name and never create a shape record;
+// builders create the shape record and are not tracked by name, so the two
+// populations are disjoint and Unregister(name) alone could never release a
+// builder's record. Without this, dynamically creating and removing uniquely
+// named vectors retained every one of them -- label children included -- for
+// the registry's lifetime, because shapeRecord holds its collector strongly.
+//
+// Unregistering straight through PrometheusRegistry() still leaves the record
+// behind: this package cannot observe that call.
+func (r *Registry) UnregisterCollector(c prometheus.Collector) bool {
+	if !r.registry.Unregister(c) {
+		return false
+	}
+
+	r.owned.mu.Lock()
+	for name, tracked := range r.owned.collectors {
+		if sameCollector(tracked, c) {
+			delete(r.owned.collectors, name)
+		}
+	}
+	r.owned.mu.Unlock()
+
+	r.releaseShapes(c)
+	return true
+}
+
+// releaseShapes drops the shape records owned by a collector that has just
+// been unregistered.
+//
+// The records are stale as well as retaining: whatever registers that
+// descriptor next is a different collector, which registerOrExisting already
+// has to detect and refuse to vouch for.
+func (r *Registry) releaseShapes(c prometheus.Collector) {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+
+	for id, record := range r.state.shapes {
+		if sameCollector(record.owner, c) {
+			delete(r.state.shapes, id)
+		}
+	}
 }
 
 // Gatherer returns the underlying prometheus.Gatherer interface.
