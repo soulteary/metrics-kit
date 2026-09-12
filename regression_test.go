@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -465,5 +466,123 @@ func TestConstLabelsSeparateMetricIdentities(t *testing.T) {
 	}()
 	if conflict == nil {
 		t.Error("differing buckets under the same const labels were silently accepted")
+	}
+}
+
+// --- Codex review round 4 (PR #4) ---
+
+// TestGaugeIsNotReusedAsACounter is the regression test for leaving the
+// collector KIND out of the shape.
+//
+// Prometheus does not distinguish kinds in a descriptor, and neither do Go's
+// interfaces: a gauge structurally implements Inc and Add, so
+// prometheus.Counter accepts one. The type assertion therefore succeeded and
+// handed back a gauge as a counter -- exported as a gauge, and accepting the
+// negative Add calls a counter must refuse.
+func TestGaugeIsNotReusedAsACounter(t *testing.T) {
+	r := NewRegistry("app")
+	r.Gauge("requests").Help("Requests").Build()
+
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			t.Fatal("a gauge was returned as a counter")
+		}
+		if msg := fmt.Sprint(rec); !strings.Contains(msg, "kind=") {
+			t.Errorf("panic = %q, want it to report the kind mismatch", msg)
+		}
+	}()
+	r.Counter("requests").Help("Requests").Build()
+}
+
+// TestSummaryIsNotReusedAsAHistogram pins the same property for Observe: a
+// summary satisfies prometheus.Histogram, since both carry it.
+//
+// Unlike the gauge/counter case this was ALREADY refused before kindShape --
+// their fingerprints differ anyway, one ending in objectives= and the other
+// in buckets= -- so this is a guard against that incidental protection being
+// refactored away, not a regression test. It passes with or without the kind
+// tag.
+func TestSummaryIsNotReusedAsAHistogram(t *testing.T) {
+	r := NewRegistry("app")
+	r.Summary("latency_seconds").Help("Latency").Build()
+
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Fatal("a summary was returned as a histogram")
+		}
+	}()
+	r.Histogram("latency_seconds").Help("Latency").Build()
+}
+
+// TestShapeIsNotTrustedForAnotherCollector is the regression test for keying
+// the shape on the metric id alone. A descriptor can change hands without this
+// package noticing -- builder registration, Unregister, then a raw external
+// registration with the same descriptor and different buckets -- and the
+// recorded shape still described the DEPARTED collector, so a matching
+// fingerprint handed back the incompatible external one as verified.
+func TestShapeIsNotTrustedForAnotherCollector(t *testing.T) {
+	r := NewRegistry("app")
+
+	mine := r.Histogram("latency_seconds").Help("Latency").Buckets([]float64{0.1, 1}).Build()
+	if !r.PrometheusRegistry().Unregister(mine) {
+		t.Fatal("Unregister reported the collector was not registered")
+	}
+
+	// Someone registers their own collector for the same descriptor, with a
+	// different layout, behind the builders' back.
+	external := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "app",
+		Name:      "latency_seconds",
+		Help:      "Latency",
+		Buckets:   []float64{5, 10},
+	})
+	r.MustRegister(external)
+
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			t.Fatal("the external collector was reused on a shape recorded for a different one")
+		}
+		if msg := fmt.Sprint(rec); !strings.Contains(msg, "unknown") {
+			t.Errorf("panic = %q, want it to report the prior shape as unknown", msg)
+		}
+	}()
+	// The SAME buckets the record holds: a shape comparison alone would match.
+	r.Histogram("latency_seconds").Help("Latency").Buckets([]float64{0.1, 1}).Build()
+}
+
+// TestTerminalInfinityBucketCanonicalizes is the regression test for keeping an
+// explicit trailing +Inf in the fingerprint. Prometheus appends that bucket
+// itself and strips a supplied one, so the two declarations are the same
+// histogram and the second registration was refused as a conflict.
+func TestTerminalInfinityBucketCanonicalizes(t *testing.T) {
+	r := NewRegistry("app")
+
+	first := r.Histogram("latency_seconds").Help("Latency").
+		Buckets([]float64{0.1, 1}).Build()
+
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Fatalf("an explicit +Inf was reported as a conflict: %v", rec)
+			}
+		}()
+		if second := r.Histogram("latency_seconds").Help("Latency").
+			Buckets([]float64{0.1, 1, math.Inf(1)}).Build(); second != first {
+			t.Error("the two declarations returned different collectors")
+		}
+	}()
+
+	// DefBuckets plus an explicit +Inf is still the default layout.
+	if got, want := bucketShape(append(append([]float64(nil), prometheus.DefBuckets...), math.Inf(1))),
+		bucketShape(nil); got != want {
+		t.Errorf("bucketShape(DefBuckets+Inf) = %q, want %q", got, want)
+	}
+
+	// A LONE +Inf is not the default layout: empty means DefBuckets, a lone
+	// +Inf means no finite bounds at all.
+	if bucketShape([]float64{math.Inf(1)}) == bucketShape(nil) {
+		t.Error("a lone +Inf was conflated with the default buckets")
 	}
 }

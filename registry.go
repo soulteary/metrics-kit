@@ -5,6 +5,8 @@ package metrics
 import (
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -45,17 +47,32 @@ type registryState struct {
 	collectors map[string]prometheus.Collector
 
 	// shapes records, per metric id, the configuration Prometheus does not
-	// treat as part of a collector's identity -- label ORDER, histogram
-	// buckets, summary objectives -- so a second registration asking for a
-	// different one is reported instead of silently reusing the first.
-	shapes map[string]string
+	// treat as part of a collector's identity -- the collector KIND, label
+	// ORDER, histogram buckets, summary objectives -- so a second
+	// registration asking for a different one is reported instead of
+	// silently reusing the first.
+	shapes map[string]shapeRecord
+}
+
+// shapeRecord is a fingerprint together with the collector it describes.
+//
+// The owner matters because a descriptor can change hands without this
+// package noticing: register through a builder, Unregister that collector,
+// then raw-register an external one with the same descriptor and different
+// buckets. The next builder request gets AlreadyRegisteredError naming the
+// EXTERNAL collector, while the recorded shape still describes the departed
+// one -- so a matching fingerprint would hand back the incompatible external
+// collector as verified.
+type shapeRecord struct {
+	shape string
+	owner prometheus.Collector
 }
 
 // newRegistryState allocates state for a registry this package owns.
 func newRegistryState() *registryState {
 	return &registryState{
 		collectors: make(map[string]prometheus.Collector),
-		shapes:     make(map[string]string),
+		shapes:     make(map[string]shapeRecord),
 	}
 }
 
@@ -197,13 +214,18 @@ func (r *Registry) registerOrExisting(c prometheus.Collector, id, shape string) 
 	defer r.state.mu.Unlock()
 
 	if r.state.shapes == nil {
-		r.state.shapes = make(map[string]string)
+		r.state.shapes = make(map[string]shapeRecord)
 	}
 
 	if err := r.registry.Register(c); err != nil {
 		var already prometheus.AlreadyRegisteredError
 		if errors.As(err, &already) {
-			previous, known := r.state.shapes[id]
+			record, known := r.state.shapes[id]
+			if known && !sameCollector(record.owner, already.ExistingCollector) {
+				// The descriptor changed hands. Whatever is registered now is
+				// not what this record describes, so its shape proves nothing.
+				known = false
+			}
 			if !known {
 				// Prometheus says this descriptor is taken, but nothing
 				// recorded its shape -- it was registered outside the
@@ -214,8 +236,8 @@ func (r *Registry) registerOrExisting(c prometheus.Collector, id, shape string) 
 				// the mismatch this check exists to catch slips through.
 				panic(shapeConflict(id, "unknown (registered outside this package)", shape))
 			}
-			if previous != shape {
-				panic(shapeConflict(id, previous, shape))
+			if record.shape != shape {
+				panic(shapeConflict(id, record.shape, shape))
 			}
 			return already.ExistingCollector
 		}
@@ -227,8 +249,22 @@ func (r *Registry) registerOrExisting(c prometheus.Collector, id, shape string) 
 	// -- the caller reached PrometheusRegistry().Unregister -- and Prometheus
 	// accepts a different layout after that, so replace it rather than
 	// reporting a conflict with a collector that has gone.
-	r.state.shapes[id] = shape
+	r.state.shapes[id] = shapeRecord{shape: shape, owner: c}
 	return c
+}
+
+// sameCollector reports whether a and b are the same collector instance.
+//
+// By pointer identity rather than ==, which panics on an interface holding a
+// non-comparable value and a caller may well register one. Anything not
+// comparable this way is reported as NOT the same, which fails closed: the
+// recorded shape is then treated as unknown and the reuse refused.
+func sameCollector(a, b prometheus.Collector) bool {
+	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+	if av.Kind() != reflect.Pointer || bv.Kind() != reflect.Pointer {
+		return false
+	}
+	return av.Pointer() == bv.Pointer()
 }
 
 // shapeConflict is the panic message for an incompatible re-registration.
@@ -280,6 +316,18 @@ func constLabelID(constLabels prometheus.Labels) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
+// kindShape fingerprints the collector kind.
+//
+// Prometheus does not distinguish kinds in a descriptor, and Go's interfaces
+// do not distinguish them either: a gauge structurally implements Inc and Add,
+// so prometheus.Counter accepts one, and a summary implements Observe, so
+// prometheus.Histogram accepts one. Reusing across kinds therefore type-
+// asserted cleanly and handed back the wrong instrument -- a gauge exported
+// as a counter, accepting negative Add calls.
+func kindShape(kind string) string {
+	return "kind=" + kind + ";"
+}
+
 // labelShape fingerprints the label ORDER, which the id deliberately discards.
 func labelShape(labels []string) string {
 	return "labels=[" + strings.Join(labels, ",") + "]"
@@ -293,7 +341,21 @@ func labelShape(labels []string) string {
 // leaves it empty, and treating those as different made a perfectly valid
 // second registration panic as a conflict.
 func bucketShape(buckets []float64) string {
-	if len(buckets) == 0 || slices.Equal(buckets, prometheus.DefBuckets) {
+	if len(buckets) == 0 {
+		return "buckets=default"
+	}
+	// A terminal +Inf is implicit: Prometheus appends that bucket itself and
+	// strips a supplied one, so a declaration carrying it and one omitting it
+	// are the same histogram -- and reporting them as a conflict rejected a
+	// perfectly valid second registration.
+	//
+	// Stripped AFTER the empty check, never before: []float64{+Inf} is not an
+	// empty slice to Prometheus either. Empty means DefBuckets; a lone +Inf
+	// means no finite bounds at all, which is a different histogram.
+	if math.IsInf(buckets[len(buckets)-1], +1) {
+		buckets = buckets[:len(buckets)-1]
+	}
+	if slices.Equal(buckets, prometheus.DefBuckets) {
 		return "buckets=default"
 	}
 	parts := make([]string, len(buckets))

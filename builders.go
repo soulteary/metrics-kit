@@ -105,7 +105,7 @@ func (b *CounterBuilder) Build() prometheus.Counter {
 		ConstLabels: b.constLabels,
 	}
 	counter := prometheus.NewCounter(opts)
-	return b.registry.registerOrExisting(counter, b.registry.metricID(b.name, nil, b.constLabels), labelShape(nil)).(prometheus.Counter)
+	return b.registry.registerOrExisting(counter, b.registry.metricID(b.name, nil, b.constLabels), kindShape("counter")+labelShape(nil)).(prometheus.Counter)
 }
 
 // BuildVec creates and registers a CounterVec (with labels).
@@ -118,7 +118,7 @@ func (b *CounterBuilder) BuildVec() *prometheus.CounterVec {
 		ConstLabels: b.constLabels,
 	}
 	counterVec := prometheus.NewCounterVec(opts, b.labels)
-	return b.registry.registerOrExisting(counterVec, b.registry.metricID(b.name, b.labels, b.constLabels), labelShape(b.labels)).(*prometheus.CounterVec)
+	return b.registry.registerOrExisting(counterVec, b.registry.metricID(b.name, b.labels, b.constLabels), kindShape("counter")+labelShape(b.labels)).(*prometheus.CounterVec)
 }
 
 // --- HistogramBuilder methods ---
@@ -158,7 +158,7 @@ func (b *HistogramBuilder) Build() prometheus.Histogram {
 		ConstLabels: b.constLabels,
 	}
 	histogram := prometheus.NewHistogram(opts)
-	return b.registry.registerOrExisting(histogram, b.registry.metricID(b.name, nil, b.constLabels), labelShape(nil)+";"+bucketShape(b.buckets)).(prometheus.Histogram)
+	return b.registry.registerOrExisting(histogram, b.registry.metricID(b.name, nil, b.constLabels), kindShape("histogram")+labelShape(nil)+";"+bucketShape(b.buckets)).(prometheus.Histogram)
 }
 
 // BuildVec creates and registers a HistogramVec (with labels).
@@ -172,7 +172,7 @@ func (b *HistogramBuilder) BuildVec() *prometheus.HistogramVec {
 		ConstLabels: b.constLabels,
 	}
 	histogramVec := prometheus.NewHistogramVec(opts, b.labels)
-	return b.registry.registerOrExisting(histogramVec, b.registry.metricID(b.name, b.labels, b.constLabels), labelShape(b.labels)+";"+bucketShape(b.buckets)).(*prometheus.HistogramVec)
+	return b.registry.registerOrExisting(histogramVec, b.registry.metricID(b.name, b.labels, b.constLabels), kindShape("histogram")+labelShape(b.labels)+";"+bucketShape(b.buckets)).(*prometheus.HistogramVec)
 }
 
 // --- GaugeBuilder methods ---
@@ -205,7 +205,7 @@ func (b *GaugeBuilder) Build() prometheus.Gauge {
 		ConstLabels: b.constLabels,
 	}
 	gauge := prometheus.NewGauge(opts)
-	return b.registry.registerOrExisting(gauge, b.registry.metricID(b.name, nil, b.constLabels), labelShape(nil)).(prometheus.Gauge)
+	return b.registry.registerOrExisting(gauge, b.registry.metricID(b.name, nil, b.constLabels), kindShape("gauge")+labelShape(nil)).(prometheus.Gauge)
 }
 
 // BuildVec creates and registers a GaugeVec (with labels).
@@ -218,7 +218,7 @@ func (b *GaugeBuilder) BuildVec() *prometheus.GaugeVec {
 		ConstLabels: b.constLabels,
 	}
 	gaugeVec := prometheus.NewGaugeVec(opts, b.labels)
-	return b.registry.registerOrExisting(gaugeVec, b.registry.metricID(b.name, b.labels, b.constLabels), labelShape(b.labels)).(*prometheus.GaugeVec)
+	return b.registry.registerOrExisting(gaugeVec, b.registry.metricID(b.name, b.labels, b.constLabels), kindShape("gauge")+labelShape(b.labels)).(*prometheus.GaugeVec)
 }
 
 // --- SummaryBuilder methods ---
@@ -258,7 +258,7 @@ func (b *SummaryBuilder) Build() prometheus.Summary {
 		ConstLabels: b.constLabels,
 	}
 	summary := prometheus.NewSummary(opts)
-	return b.registry.registerOrExisting(summary, b.registry.metricID(b.name, nil, b.constLabels), labelShape(nil)+";"+objectiveShape(b.objectives)).(prometheus.Summary)
+	return b.registry.registerOrExisting(summary, b.registry.metricID(b.name, nil, b.constLabels), kindShape("summary")+labelShape(nil)+";"+objectiveShape(b.objectives)).(prometheus.Summary)
 }
 
 // BuildVec creates and registers a SummaryVec (with labels).
@@ -272,7 +272,7 @@ func (b *SummaryBuilder) BuildVec() *prometheus.SummaryVec {
 		ConstLabels: b.constLabels,
 	}
 	summaryVec := prometheus.NewSummaryVec(opts, b.labels)
-	return b.registry.registerOrExisting(summaryVec, b.registry.metricID(b.name, b.labels, b.constLabels), labelShape(b.labels)+";"+objectiveShape(b.objectives)).(*prometheus.SummaryVec)
+	return b.registry.registerOrExisting(summaryVec, b.registry.metricID(b.name, b.labels, b.constLabels), kindShape("summary")+labelShape(b.labels)+";"+objectiveShape(b.objectives)).(*prometheus.SummaryVec)
 }
 
 // --- Predefined bucket configurations ---
