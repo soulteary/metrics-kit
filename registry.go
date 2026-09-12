@@ -316,7 +316,7 @@ func constLabelID(constLabels prometheus.Labels) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
-// kindShape fingerprints the collector kind.
+// kindShape fingerprints the collector kind AND its form.
 //
 // Prometheus does not distinguish kinds in a descriptor, and Go's interfaces
 // do not distinguish them either: a gauge structurally implements Inc and Add,
@@ -324,6 +324,14 @@ func constLabelID(constLabels prometheus.Labels) string {
 // prometheus.Histogram accepts one. Reusing across kinds therefore type-
 // asserted cleanly and handed back the wrong instrument -- a gauge exported
 // as a counter, accepting negative Add calls.
+//
+// Scalar and vector are separate kinds here ("counter" vs "counter_vec"),
+// because Build() and BuildVec() with no labels produce the same metric id
+// AND the same label shape. The second registration was handed the first
+// collector, and THAT assertion does fail -- a prometheus.Counter is not a
+// *prometheus.CounterVec -- so the reuse this whole mechanism exists to make
+// safe reintroduced the startup panic it was meant to remove. Now it is
+// reported as the configuration conflict it is.
 func kindShape(kind string) string {
 	return "kind=" + kind + ";"
 }

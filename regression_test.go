@@ -586,3 +586,66 @@ func TestTerminalInfinityBucketCanonicalizes(t *testing.T) {
 		t.Error("a lone +Inf was conflated with the default buckets")
 	}
 }
+
+// --- Codex review round 5 (PR #4) ---
+
+// TestScalarAndZeroLabelVectorAreNotReused is the regression test for kinds
+// that ignore the scalar/vector form.
+//
+// Build() and BuildVec() with no labels produce the same metric id AND the
+// same label shape, so the second registration was handed the first
+// collector -- and THAT type assertion does fail, because a
+// prometheus.Counter is not a *prometheus.CounterVec. The reuse mechanism
+// that exists to remove the duplicate-registration panic reintroduced it, as
+// an unrecognisable one.
+func TestScalarAndZeroLabelVectorAreNotReused(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first func(*Registry)
+		then  func(*Registry)
+	}{
+		{
+			name:  "counter scalar then vec",
+			first: func(r *Registry) { r.Counter("c").Help("C").Build() },
+			then:  func(r *Registry) { r.Counter("c").Help("C").BuildVec() },
+		},
+		{
+			name:  "counter vec then scalar",
+			first: func(r *Registry) { r.Counter("c").Help("C").BuildVec() },
+			then:  func(r *Registry) { r.Counter("c").Help("C").Build() },
+		},
+		{
+			name:  "gauge scalar then vec",
+			first: func(r *Registry) { r.Gauge("g").Help("G").Build() },
+			then:  func(r *Registry) { r.Gauge("g").Help("G").BuildVec() },
+		},
+		{
+			name:  "histogram scalar then vec",
+			first: func(r *Registry) { r.Histogram("h").Help("H").Build() },
+			then:  func(r *Registry) { r.Histogram("h").Help("H").BuildVec() },
+		},
+		{
+			name:  "summary scalar then vec",
+			first: func(r *Registry) { r.Summary("s").Help("S").Build() },
+			then:  func(r *Registry) { r.Summary("s").Help("S").BuildVec() },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRegistry("app")
+			tc.first(r)
+
+			defer func() {
+				rec := recover()
+				if rec == nil {
+					t.Fatal("the mismatched form was reused")
+				}
+				// Reported as a conflict, not as a type assertion failure.
+				msg := fmt.Sprint(rec)
+				if !strings.Contains(msg, "already registered with a different configuration") {
+					t.Errorf("panic = %q, want the configuration-conflict report", msg)
+				}
+			}()
+			tc.then(r)
+		})
+	}
+}
