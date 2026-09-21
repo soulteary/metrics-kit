@@ -1,6 +1,6 @@
 # metrics-kit
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit/v2.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit/v2)
+[![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit/v3.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit/v3)
 [![Go Report Card](.github/goreportcard.svg)](.github/goreportcard-report.md)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/soulteary/metrics-kit/graph/badge.svg)](https://codecov.io/gh/soulteary/metrics-kit)
@@ -10,12 +10,23 @@
 A unified Prometheus metrics toolkit for Go services. This package provides metric builders, registry management, HTTP handlers, and middleware for consistent metrics collection across services.
 
 
-> **Breaking in v2.3.0 — Fiber support moved to a subpackage.**
+> **Breaking in v3.0.0 — the import path is now `/v3`, and Fiber support moved to a subpackage.**
+>
+> ```diff
+> -import metrics "github.com/soulteary/metrics-kit/v2"
+> +import metrics "github.com/soulteary/metrics-kit/v3"
+> ```
+>
+> The major bump is required: v2.3.0 would have removed exported functions
+> from a `/v2` import path, so `go get -u` would have handed existing users a
+> version that no longer compiles. `/v3` leaves v2 where it is — nothing
+> breaks until you change the import.
+>
 > The Fiber handlers and middleware are now
-> `github.com/soulteary/metrics-kit/v2/fiberadapter`, so importing the root
+> `github.com/soulteary/metrics-kit/v3/fiberadapter`, so importing the root
 > package no longer links Fiber (and fasthttp) into binaries that never use
 > it. In a net/http service that means **26 fewer linked packages, 10 fewer
-> modules and a 7% smaller binary** (the rest is Prometheus, which stays).
+> modules and a smaller binary** (the rest is Prometheus, which stays).
 >
 > | Before | After |
 > |---|---|
@@ -27,7 +38,7 @@ A unified Prometheus metrics toolkit for Go services. This package provides metr
 > | `metrics.NewFiberMiddlewareWithConfig(cfg)` | `mw, reg := fiberadapter.NewMiddlewareWithConfig(cfg)` |
 > | `m.FiberMiddleware(cfg)` | `fiberadapter.Middleware(m, cfg)` |
 >
-> Nothing on the net/http side changed.
+> Apart from the import path, nothing on the net/http side changed.
 
 ## Features
 
@@ -42,7 +53,7 @@ A unified Prometheus metrics toolkit for Go services. This package provides metr
 ## Installation
 
 ```bash
-go get github.com/soulteary/metrics-kit/v2
+go get github.com/soulteary/metrics-kit/v3
 ```
 
 ## Usage
@@ -51,7 +62,7 @@ go get github.com/soulteary/metrics-kit/v2
 
 ```go
 import (
-    metrics "github.com/soulteary/metrics-kit/v2"
+    metrics "github.com/soulteary/metrics-kit/v3"
 )
 
 // Create a registry with namespace
@@ -100,8 +111,8 @@ activeConns.Dec()
 ```go
 import (
     "net/http"
-    metrics "github.com/soulteary/metrics-kit/v2"
-    "github.com/soulteary/metrics-kit/v2/fiberadapter"
+    metrics "github.com/soulteary/metrics-kit/v3"
+    "github.com/soulteary/metrics-kit/v3/fiberadapter"
 )
 
 // Standard library (uses default Prometheus registry only)
@@ -128,8 +139,8 @@ http.Handle("/metrics", handler)
 ```go
 import (
     "github.com/gofiber/fiber/v3"
-    metrics "github.com/soulteary/metrics-kit/v2"
-    "github.com/soulteary/metrics-kit/v2/fiberadapter"
+    metrics "github.com/soulteary/metrics-kit/v3"
+    "github.com/soulteary/metrics-kit/v3/fiberadapter"
 )
 
 app := fiber.New()
@@ -282,8 +293,8 @@ package main
 
 import (
     "github.com/gofiber/fiber/v3"
-    metrics "github.com/soulteary/metrics-kit/v2"
-    "github.com/soulteary/metrics-kit/v2/fiberadapter"
+    metrics "github.com/soulteary/metrics-kit/v3"
+    "github.com/soulteary/metrics-kit/v3/fiberadapter"
 )
 
 func main() {
@@ -325,7 +336,7 @@ func main() {
 package main
 
 import (
-    metrics "github.com/soulteary/metrics-kit/v2"
+    metrics "github.com/soulteary/metrics-kit/v3"
 )
 
 func main() {
@@ -440,6 +451,54 @@ ready-made groups: `AuthMetrics`, `OTPMetrics`, `CacheMetrics`, `RedisMetrics`,
 - Calling `registry.PrometheusRegistry().Unregister(collector)` directly still works, but this package cannot observe that call, so the shape record is left behind. Prefer `UnregisterCollector`.
 - Note that re-registering the same metric name with **different label names** panics inside Prometheus whatever you do: `client_golang` keeps its `dimHashesByName` for the life of the process on purpose.
 
+## Upgrade Notes (v3.0.0)
+
+Four things the compiler will point at, and two it will not. The last two are
+bug fixes, and both change numbers you may already be alerting on.
+
+- **The import path is `/v3`.** `go get github.com/soulteary/metrics-kit/v3`,
+  then rewrite the import. `/v2` stays where it is at v2.2.0 and is untouched by
+  everything below -- which is the reason for the major bump rather than a
+  v2.3.0 that would have removed exported names from an import path people are
+  already on.
+- **Fiber moved to `fiberadapter`.** The seven names in the table at the top of
+  this file changed package; the root package no longer imports Fiber at all. A
+  net/http service that never touches `fiberadapter` stops linking fasthttp, and
+  the entire Fiber dependency tree leaves its `go.mod` and `go.sum`.
+- **`FiberMiddleware` is a function, not a method.** A subpackage cannot add
+  methods to another package's type, so `m.FiberMiddleware(cfg)` became
+  `fiberadapter.Middleware(m, cfg)`.
+- **The middleware constructors return the registry too.** `NewMiddleware(ns)`
+  and `NewMiddlewareWithConfig(cfg)` now return
+  `(fiber.Handler, *metrics.Registry)`. They build the `HTTPMetrics`
+  themselves, and with no `Registry` in the config `NewHTTPMetrics` makes one --
+  returning only the handler dropped the only reference to it, so what the
+  middleware recorded could be scraped by nobody. `Handler()` serves the
+  *default* registry, which is not that one. Serve what a middleware collects
+  with `HandlerFor(reg)`.
+- **Failed Fiber requests are no longer counted as successes.** Fiber runs
+  `app.ErrorHandler` *after* the middleware chain unwinds, so the status read
+  straight after `c.Next()` was still 200 for a request the client received a
+  500 for. Every failure was recorded as `status="200"`. **Expect your error
+  rate to stop being zero** -- a `requests_total{status=~"5.."}` alert that never
+  fired can now fire.
+- **Label values survive the next request.** `c.Path()` and `c.Method()` are
+  unsafe views onto fasthttp's pooled request buffer, valid only until the
+  handler returns, but a Prometheus label is kept for the life of the process.
+  The next request rewrote an already-recorded label in place, two series
+  collided, `Gather()` failed with a duplicate and `/metrics` answered 500 from
+  then on -- for **every** metric in the registry. `DefaultPathNormalize`
+  rebuilt the path and hid it; `DisablePathNormalization` and any
+  `PathTransformFunc` returning its argument unchanged did not.
+
+Two names were added. `HTTPMetricsConfig.TransformPath` is the exported form of
+what was `transformPath`: an adapter outside this package has to normalize paths
+the way the rest of it does -- limiting label cardinality is the entire point of
+that step -- so any out-of-tree adapter (Echo, Gin, chi) can read the rule
+instead of restating it. `HTTPMetrics.Registry` reports where those collectors
+were registered, which is what lets the constructors above hand a registry
+back.
+
 ## Upgrade Notes (v2.2.0)
 
 One field and two functions were added; nothing was removed. The first item can
@@ -489,8 +548,10 @@ change a crash into normal operation, which is the point.
 ## Requirements
 
 - **Go 1.27+** (`go.mod` declares `go 1.27.0`)
+- Import path **`github.com/soulteary/metrics-kit/v3`**
 - github.com/prometheus/client_golang v1.22.0+
-- github.com/gofiber/fiber/v3 v3.4.0+ (for Fiber middleware)
+- github.com/gofiber/fiber/v3 v3.4.0+ — **only if you import `fiberadapter`**. The
+  root package does not link Fiber, which is the point of the v3 split.
 
 This v2 module line targets Fiber v3. Applications that still use Fiber v2 should remain on `github.com/soulteary/metrics-kit` v1.
 

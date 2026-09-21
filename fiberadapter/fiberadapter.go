@@ -21,7 +21,7 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/prometheus/client_golang/prometheus"
 
-	metrics "github.com/soulteary/metrics-kit/v2"
+	metrics "github.com/soulteary/metrics-kit/v3"
 )
 
 // Handler returns a Fiber handler for the /metrics endpoint using the default
