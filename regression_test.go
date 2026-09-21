@@ -167,19 +167,19 @@ func TestDuplicateSummaryWithDifferentObjectivesIsReported(t *testing.T) {
 func TestNilPathTransformHasAnExplicitOptOut(t *testing.T) {
 	cfg := DefaultHTTPMetricsConfig()
 	cfg.PathTransformFunc = nil
-	if got, want := cfg.transformPath("/users/123"), "/users/:id"; got != want {
+	if got, want := cfg.TransformPath("/users/123"), "/users/:id"; got != want {
 		t.Errorf("nil transform gave %q, want %q (the safe default)", got, want)
 	}
 
 	cfg.DisablePathNormalization = true
-	if got, want := cfg.transformPath("/users/123"), "/users/123"; got != want {
+	if got, want := cfg.TransformPath("/users/123"), "/users/123"; got != want {
 		t.Errorf("DisablePathNormalization gave %q, want the raw %q", got, want)
 	}
 
 	// A custom function still wins over the default.
 	cfg = DefaultHTTPMetricsConfig()
 	cfg.PathTransformFunc = func(string) string { return "/fixed" }
-	if got := cfg.transformPath("/users/123"); got != "/fixed" {
+	if got := cfg.TransformPath("/users/123"); got != "/fixed" {
 		t.Errorf("custom transform gave %q, want /fixed", got)
 	}
 }

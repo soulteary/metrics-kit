@@ -1,10 +1,8 @@
 package metrics
 
 import (
-	"strconv"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -87,14 +85,20 @@ func DefaultHTTPMetricsConfig() HTTPMetricsConfig {
 	}
 }
 
-// transformPath applies the configured path normalization.
+// TransformPath applies this config's path normalization: SkipPaths are the
+// caller's business, but everything else -- a custom PathTransformFunc, or
+// DefaultPathNormalize collapsing /users/123 to /users/:id -- runs here.
 //
 // A nil PathTransformFunc means DefaultPathNormalize. It cannot also mean
 // "raw path": a config built as a struct literal leaves the field nil without
 // intending anything by it, and a raw URL path as a label value lets anyone
 // requesting random URLs mint a new time series per request. Raw paths are
 // spelled DisablePathNormalization.
-func (c HTTPMetricsConfig) transformPath(path string) string {
+//
+// Exported so a framework adapter normalizes labels exactly the way the rest
+// of the package does; label cardinality is the whole point of this step, and
+// an adapter that got it subtly wrong would blow up the series count.
+func (c HTTPMetricsConfig) TransformPath(path string) string {
 	if c.DisablePathNormalization {
 		return path
 	}
@@ -155,82 +159,6 @@ func NewHTTPMetrics(cfg HTTPMetricsConfig) *HTTPMetrics {
 	}
 
 	return m
-}
-
-// FiberMiddleware returns a Fiber middleware that collects HTTP metrics.
-func (m *HTTPMetrics) FiberMiddleware(cfg HTTPMetricsConfig) fiber.Handler {
-	skipPathMap := make(map[string]bool)
-	for _, p := range cfg.SkipPaths {
-		skipPathMap[p] = true
-	}
-
-	return func(c fiber.Ctx) error {
-		path := c.Path()
-
-		// Skip metrics collection for specified paths
-		if skipPathMap[path] {
-			return c.Next()
-		}
-
-		path = cfg.transformPath(path)
-		path = SanitizeLabelValue(path, DefaultLabelValueMaxLength)
-		method := SanitizeLabelValue(c.Method(), DefaultLabelValueMaxLength)
-
-		// Track in-flight requests
-		if m.RequestsInFlight != nil {
-			m.RequestsInFlight.Inc()
-			defer m.RequestsInFlight.Dec()
-		}
-
-		// Record request size
-		if m.RequestSize != nil {
-			// Content-Length rather than len(c.Body()): reading the body here
-			// materialises it in full for every request, including ones the
-			// handler streams or never reads, and runs before any body-size
-			// limit further down the chain.
-			// A negative Content-Length means the length is UNKNOWN --
-			// a streamed or chunked upload. Recording it as zero increments
-			// the histogram count while contributing nothing to its sum and
-			// lowest bucket, systematically understating request sizes, so
-			// the observation is skipped instead.
-			if size := c.Request().Header.ContentLength(); size >= 0 {
-				m.RequestSize.WithLabelValues(method, path).Observe(float64(size))
-			}
-		}
-
-		start := time.Now()
-
-		// Process request
-		err := c.Next()
-
-		// Record metrics
-		duration := time.Since(start).Seconds()
-		status := SanitizeLabelValue(strconv.Itoa(c.Response().StatusCode()), DefaultLabelValueMaxLength)
-
-		m.RequestsTotal.WithLabelValues(method, path, status).Inc()
-		m.RequestDuration.WithLabelValues(method, path).Observe(duration)
-
-		// Record response size
-		if m.ResponseSize != nil {
-			m.ResponseSize.WithLabelValues(method, path).Observe(float64(len(c.Response().Body())))
-		}
-
-		return err
-	}
-}
-
-// NewFiberMiddleware creates a Fiber middleware with default configuration.
-func NewFiberMiddleware(namespace string) fiber.Handler {
-	cfg := DefaultHTTPMetricsConfig()
-	cfg.Namespace = namespace
-	m := NewHTTPMetrics(cfg)
-	return m.FiberMiddleware(cfg)
-}
-
-// NewFiberMiddlewareWithConfig creates a Fiber middleware with custom configuration.
-func NewFiberMiddlewareWithConfig(cfg HTTPMetricsConfig) fiber.Handler {
-	m := NewHTTPMetrics(cfg)
-	return m.FiberMiddleware(cfg)
 }
 
 // RecordRequest records a single HTTP request metric.

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -225,108 +224,6 @@ func TestRegisterHTTPHandlerFor(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.Contains(t, rr.Body.String(), "test_register_test_metric 1")
-}
-
-func TestFiberHandler(t *testing.T) {
-	handler := FiberHandler()
-	require.NotNil(t, handler)
-
-	app := fiber.New()
-	app.Get("/metrics", handler)
-
-	req := httptest.NewRequest("GET", "/metrics", http.NoBody)
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestFiberHandlerFor(t *testing.T) {
-	r := NewRegistry("test_fiber_handler_for")
-	counter := prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: "test_fiber_handler_for",
-		Name:      "requests_total",
-		Help:      "Total requests",
-	})
-	r.MustRegister(counter)
-	counter.Inc()
-
-	handler := FiberHandlerFor(r)
-	require.NotNil(t, handler)
-
-	app := fiber.New()
-	app.Get("/metrics", handler)
-
-	req := httptest.NewRequest("GET", "/metrics", http.NoBody)
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestFiberHandlerForGatherer(t *testing.T) {
-	r := prometheus.NewRegistry()
-	counter := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "fiber_gatherer_test_counter",
-		Help: "A test counter",
-	})
-	r.MustRegister(counter)
-	counter.Add(10)
-
-	handler := FiberHandlerForGatherer(r)
-	require.NotNil(t, handler)
-
-	app := fiber.New()
-	app.Get("/metrics", handler)
-
-	req := httptest.NewRequest("GET", "/metrics", http.NoBody)
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestNewFiberHandler(t *testing.T) {
-	opts := DefaultHandlerOpts()
-	handler := NewFiberHandler(opts)
-	require.NotNil(t, handler)
-
-	app := fiber.New()
-	app.Get("/metrics", handler)
-
-	req := httptest.NewRequest("GET", "/metrics", http.NoBody)
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestNewFiberHandler_WithRegistry(t *testing.T) {
-	r := NewRegistry("test_fiber_new_handler")
-	counter := prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: "test_fiber_new_handler",
-		Name:      "custom_counter",
-		Help:      "A custom counter",
-	})
-	r.MustRegister(counter)
-	counter.Add(42)
-
-	opts := HandlerOpts{
-		Registry:          r,
-		EnableOpenMetrics: true,
-	}
-
-	handler := NewFiberHandler(opts)
-	require.NotNil(t, handler)
-
-	app := fiber.New()
-	app.Get("/metrics", handler)
-
-	req := httptest.NewRequest("GET", "/metrics", http.NoBody)
-	resp, err := app.Test(req)
-	require.NoError(t, err)
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestNewHandler_WithTimeout(t *testing.T) {
