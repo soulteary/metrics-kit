@@ -8,6 +8,15 @@ import (
 
 // HTTPMetrics holds the metrics collectors for HTTP request monitoring.
 type HTTPMetrics struct {
+	// Registry is where these collectors were registered.
+	//
+	// When the config left Registry nil, NewHTTPMetrics created one, and this
+	// is the ONLY handle to it. Without it, metrics recorded through these
+	// collectors could be scraped by nobody: they are not in the default
+	// registry, so Handler() does not serve them, and the caller was never
+	// given a Gatherer that does.
+	Registry *Registry
+
 	// RequestsTotal counts total HTTP requests by method, path, and status
 	RequestsTotal *prometheus.CounterVec
 
@@ -124,6 +133,8 @@ func NewHTTPMetrics(cfg HTTPMetricsConfig) *HTTPMetrics {
 	}
 
 	m := &HTTPMetrics{
+		Registry: registry,
+
 		RequestsTotal: registry.Counter("requests_total").
 			Help("Total number of HTTP requests").
 			Labels("method", "path", "status").

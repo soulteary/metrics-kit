@@ -32,8 +32,8 @@
 > | `metrics.FiberHandlerFor(reg)` | `fiberadapter.HandlerFor(reg)` |
 > | `metrics.FiberHandlerForGatherer(g)` | `fiberadapter.HandlerForGatherer(g)` |
 > | `metrics.NewFiberHandler(opts)` | `fiberadapter.NewHandler(opts)` |
-> | `metrics.NewFiberMiddleware(ns)` | `fiberadapter.NewMiddleware(ns)` |
-> | `metrics.NewFiberMiddlewareWithConfig(cfg)` | `fiberadapter.NewMiddlewareWithConfig(cfg)` |
+> | `metrics.NewFiberMiddleware(ns)` | `mw, reg := fiberadapter.NewMiddleware(ns)` |
+> | `metrics.NewFiberMiddlewareWithConfig(cfg)` | `mw, reg := fiberadapter.NewMiddlewareWithConfig(cfg)` |
 > | `m.FiberMiddleware(cfg)` | `fiberadapter.Middleware(m, cfg)` |
 >
 > 除导入路径外，net/http 一侧没有任何变化。
@@ -144,7 +144,10 @@ import (
 app := fiber.New()
 
 // 简单中间件
-app.Use(fiberadapter.NewMiddleware("myservice"))
+// 第二个返回值是指标所在的注册表——没有它就没人能抓到这些指标
+mw, reg := fiberadapter.NewMiddleware("myservice")
+app.Use(mw)
+app.Get("/metrics", fiberadapter.HandlerFor(reg))
 
 // 自定义配置（默认配置已使用 DefaultPathNormalize）
 cfg := metrics.HTTPMetricsConfig{
@@ -156,8 +159,12 @@ cfg := metrics.HTTPMetricsConfig{
     IncludeRequestsInFlight: true,
     PathTransformFunc:       metrics.DefaultPathNormalize, // /users/123 -> /users/:id
 }
-app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
+mw, reg = fiberadapter.NewMiddlewareWithConfig(cfg)
+app.Use(mw)
 ```
+
+想把 HTTP 指标放进已有的注册表，设置 `cfg.Registry` 即可——下面的 Herald 示例
+演示了一个 `/metrics` 同时暴露两者的写法。
 
 ### 通用指标模式
 
@@ -298,7 +305,12 @@ func main() {
     app := fiber.New()
     
     // 添加指标中间件
-    app.Use(fiberadapter.NewMiddleware("herald"))
+    // 注册到 /metrics 所服务的同一个注册表。
+    // 不设 cfg.Registry 的话它会自建一个，这些 HTTP 指标就不会出现在 /metrics 上
+    cfg := metrics.DefaultHTTPMetricsConfig()
+    cfg.Registry = registry.WithSubsystem("http")
+    mw, _ := fiberadapter.NewMiddlewareWithConfig(cfg)
+    app.Use(mw)
     
     // 添加指标端点
     app.Get("/metrics", fiberadapter.HandlerFor(registry))
@@ -396,15 +408,17 @@ app.Get("/metrics", fiberadapter.NewHandler(metrics.DefaultHandlerOpts()))
 ```go
 cfg := metrics.DefaultHTTPMetricsConfig()
 m := metrics.NewHTTPMetrics(cfg)                 // 拿到采集器自己驱动
+                                                 // m.Registry 就是它们所在的注册表
 
-app.Use(fiberadapter.NewMiddleware("myapp"))     // 或者
-app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
+mw, reg := fiberadapter.NewMiddleware("myapp")   // 或者 NewMiddlewareWithConfig(cfg)
+app.Use(mw)
+app.Get("/metrics", fiberadapter.HandlerFor(reg))
 ```
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `Namespace` / `Subsystem` | 取自注册表 | 指标名前缀 |
-| `Registry` | `DefaultRegistry()` | 采集器注册到哪里 |
+| `Registry` | 新建的独立注册表 | 采集器注册到哪里；`m.Registry` 与中间件构造函数会告诉你是哪一个 |
 | `PathTransformFunc` | `DefaultPathNormalize` | 中间件无条件应用 |
 | `DisablePathNormalization` | `false` | 记录原始路径——先读警告 |
 | `SkipPaths` | 无 | 这些路径不记录任何指标 |

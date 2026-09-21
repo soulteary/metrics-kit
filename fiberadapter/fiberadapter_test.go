@@ -145,36 +145,62 @@ func body(t *testing.T, resp *http.Response) string {
 // --- middleware constructors ---------------------------------------------
 
 func TestNewFiberMiddleware(t *testing.T) {
-	middleware := fiberadapter.NewMiddleware("test")
+	middleware, reg := fiberadapter.NewMiddleware("test_ctor")
 	require.NotNil(t, middleware)
+	require.NotNil(t, reg, "the registry is the only handle to what this middleware records")
 
-	// It has to be a working handler, not merely non-nil. Its metrics land in
-	// a registry NewMiddleware creates and drops, so there is nothing to
-	// gather here -- see TestNewMiddlewareMetricsAreUnreachable.
 	app := fiber.New()
 	app.Use(middleware)
 	app.Get("/api/test", func(c fiber.Ctx) error { return c.SendString("OK") })
 	do(t, app, httptest.NewRequest("GET", "/api/test", nil), http.StatusOK)
+
+	// The namespace reached the metric names, and the returned registry is
+	// the one holding them.
+	assert.Equal(t, 1.0, counterValue(t, reg, "test_ctor_http_requests_total",
+		map[string]string{"method": "GET", "path": "/api/test", "status": "200"}))
 }
 
-// TestNewMiddlewareMetricsAreUnreachable pins the one thing a caller of
-// NewMiddleware needs to know: it builds its own registry and keeps no
-// reference to it, so the samples it records cannot be scraped. Handler()
-// serves the DEFAULT registry, which is not that one.
+// TestNewMiddlewareMetricsAreScrapable is the regression test for the
+// constructors returning only a handler.
 //
-// Pass a config carrying a Registry -- NewMiddlewareWithConfig, or Middleware
-// over your own HTTPMetrics -- if you intend to export what you record.
-func TestNewMiddlewareMetricsAreUnreachable(t *testing.T) {
+// They build the HTTPMetrics themselves, and with no Registry in the config
+// NewHTTPMetrics makes one; dropping it on the way out left the middleware
+// recording into a registry nothing could reach. Handler() serves the
+// DEFAULT registry, so it did not serve these either -- the middleware
+// looked like it worked and exported nothing.
+func TestNewMiddlewareMetricsAreScrapable(t *testing.T) {
+	middleware, reg := fiberadapter.NewMiddleware("scrapable_ns")
+
 	app := fiber.New()
-	app.Use(fiberadapter.NewMiddleware("unreachable_ns"))
+	app.Use(middleware)
+	app.Get("/api/test", func(c fiber.Ctx) error { return c.SendString("OK") })
+	// The returned registry is exactly what HandlerFor takes, which is the
+	// whole point of handing it back.
+	app.Get("/metrics", fiberadapter.HandlerFor(reg))
+
+	do(t, app, httptest.NewRequest("GET", "/api/test", nil), http.StatusOK)
+
+	out := body(t, do(t, app, httptest.NewRequest("GET", "/metrics", http.NoBody), http.StatusOK))
+	assert.Contains(t, out, `scrapable_ns_http_requests_total{method="GET",path="/api/test",status="200"} 1`)
+}
+
+// TestNewMiddlewareKeepsOutOfTheDefaultRegistry pins the other half of the
+// choice: a constructor that was not given a registry builds an isolated one
+// rather than reaching for the global. Two independently configured
+// middlewares cannot collide, and a test does not have to undo global state.
+func TestNewMiddlewareKeepsOutOfTheDefaultRegistry(t *testing.T) {
+	middleware, _ := fiberadapter.NewMiddleware("isolated_ns")
+
+	app := fiber.New()
+	app.Use(middleware)
 	app.Get("/api/test", func(c fiber.Ctx) error { return c.SendString("OK") })
 	do(t, app, httptest.NewRequest("GET", "/api/test", nil), http.StatusOK)
 
 	mfs, err := metrics.DefaultRegistry().Gatherer().Gather()
 	require.NoError(t, err)
 	for _, mf := range mfs {
-		require.NotContains(t, mf.GetName(), "unreachable_ns",
-			"NewMiddleware started exporting to the default registry; update its doc comment and this test")
+		require.NotContains(t, mf.GetName(), "isolated_ns",
+			"a nil config Registry must not mean the default registry")
 	}
 }
 
@@ -188,8 +214,9 @@ func TestNewFiberMiddlewareWithConfig(t *testing.T) {
 		IncludeRequestsInFlight: true,
 	}
 
-	middleware := fiberadapter.NewMiddlewareWithConfig(cfg)
+	middleware, got := fiberadapter.NewMiddlewareWithConfig(cfg)
 	require.NotNil(t, middleware)
+	assert.Same(t, reg, got, "a config naming a Registry must hand that same one back")
 
 	app := fiber.New()
 	app.Use(middleware)
@@ -202,6 +229,62 @@ func TestNewFiberMiddlewareWithConfig(t *testing.T) {
 	// The config reached the middleware: its registry holds the sample, and
 	// its SkipPaths kept /health out.
 	assert.Equal(t, []string{"/api/users"}, labelValues(t, reg, "test_cfg_api_requests_total", "path"))
+}
+
+// TestNewHTTPMetricsExposesItsRegistry covers the root-package half of the
+// fix: the constructors can only hand a registry back because HTTPMetrics
+// now carries the one it registered into.
+func TestNewHTTPMetricsExposesItsRegistry(t *testing.T) {
+	mine := metrics.NewRegistryWithSubsystem("given_reg", "http")
+	m := metrics.NewHTTPMetrics(metrics.HTTPMetricsConfig{
+		Registry: mine, Namespace: "given_reg", Subsystem: "http",
+	})
+	assert.Same(t, mine, m.Registry, "a config Registry must be reported as-is")
+
+	made := metrics.NewHTTPMetrics(metrics.HTTPMetricsConfig{
+		Namespace: "made_reg", Subsystem: "http",
+	})
+	require.NotNil(t, made.Registry, "the registry NewHTTPMetrics created must be reachable")
+
+	app := fiber.New()
+	app.Use(fiberadapter.Middleware(made, metrics.HTTPMetricsConfig{Namespace: "made_reg", Subsystem: "http"}))
+	app.Get("/api/test", func(c fiber.Ctx) error { return c.SendString("OK") })
+	do(t, app, httptest.NewRequest("GET", "/api/test", nil), http.StatusOK)
+
+	assert.Equal(t, 1.0, counterValue(t, made.Registry, "made_reg_http_requests_total",
+		map[string]string{"method": "GET", "path": "/api/test", "status": "200"}))
+}
+
+// TestOneRegistryServesMiddlewareAndCommonMetrics is the pattern the README
+// documents: application metrics and the middleware's HTTP metrics share one
+// registry, so one /metrics endpoint exposes both.
+//
+// The README's own example could not do this before -- it built a registry
+// for CommonMetrics, served that on /metrics, and then called NewMiddleware,
+// which quietly made a second registry nothing ever read. The HTTP metrics
+// were simply absent from the endpoint.
+func TestOneRegistryServesMiddlewareAndCommonMetrics(t *testing.T) {
+	registry := metrics.NewRegistry("herald")
+	otp := metrics.NewCommonMetrics(registry).NewOTPMetrics()
+	otp.RecordChallengeCreated("email", "login", "success")
+
+	cfg := metrics.DefaultHTTPMetricsConfig()
+	cfg.Registry = registry.WithSubsystem("http")
+	mw, reg := fiberadapter.NewMiddlewareWithConfig(cfg)
+	assert.Same(t, cfg.Registry, reg)
+
+	app := fiber.New()
+	app.Use(mw)
+	app.Get("/v1/ping", func(c fiber.Ctx) error { return c.SendString("ok") })
+	app.Get("/metrics", fiberadapter.HandlerFor(registry))
+
+	do(t, app, httptest.NewRequest("GET", "/v1/ping", nil), http.StatusOK)
+	out := body(t, do(t, app, httptest.NewRequest("GET", "/metrics", http.NoBody), http.StatusOK))
+
+	assert.Contains(t, out, `herald_http_requests_total{method="GET",path="/v1/ping",status="200"} 1`,
+		"the middleware's metrics must reach the endpoint")
+	assert.Contains(t, out, `herald_otp_challenges_total{channel="email",purpose="login",result="success"} 1`,
+		"and so must the application's")
 }
 
 // --- middleware behaviour -------------------------------------------------
