@@ -146,3 +146,119 @@ func TestRegistry_buildFQName(t *testing.T) {
 		})
 	}
 }
+
+// --- error and cleanup paths -------------------------------------------
+
+// TestRegistry_UnregisterAfterRawUnregister covers the branch where a name is
+// still tracked but the collector behind it is already gone: something
+// unregistered it straight through PrometheusRegistry(), which this package
+// cannot observe. Unregister must report false rather than claim a removal it
+// did not make.
+func TestRegistry_UnregisterAfterRawUnregister(t *testing.T) {
+	r := NewRegistry("unreg_raw")
+
+	counter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "unreg_raw",
+		Name:      "counter_total",
+		Help:      "A test counter",
+	})
+	require.NoError(t, r.Register("tracked", counter))
+
+	// Behind this package's back.
+	require.True(t, r.PrometheusRegistry().Unregister(counter))
+
+	assert.False(t, r.Unregister("tracked"),
+		"the name was tracked but the collector was already gone")
+}
+
+// TestRegistry_UnregisterCollectorDropsTheNamedEntry covers the other half of
+// that bookkeeping: a collector registered under a name and then removed by
+// VALUE must not leave its name behind, or a later Register under the same
+// name would look occupied.
+func TestRegistry_UnregisterCollectorDropsTheNamedEntry(t *testing.T) {
+	r := NewRegistry("unreg_by_value")
+
+	counter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "unreg_by_value",
+		Name:      "counter_total",
+		Help:      "A test counter",
+	})
+	require.NoError(t, r.Register("tracked", counter))
+
+	assert.True(t, r.UnregisterCollector(counter))
+	// The name is free again, and reports nothing left to remove.
+	assert.False(t, r.Unregister("tracked"))
+
+	require.NoError(t, r.Register("tracked", counter))
+	assert.True(t, r.Unregister("tracked"))
+}
+
+func TestRegistry_UnregisterCollectorThatWasNeverRegistered(t *testing.T) {
+	r := NewRegistry("unreg_absent")
+	counter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "unreg_absent",
+		Name:      "counter_total",
+		Help:      "A test counter",
+	})
+	assert.False(t, r.UnregisterCollector(counter))
+}
+
+// valueCollector is a Collector whose method set is on the VALUE, so it is
+// held in the interface as a struct rather than a pointer.
+type valueCollector struct{ desc *prometheus.Desc }
+
+func (v valueCollector) Describe(ch chan<- *prometheus.Desc) { ch <- v.desc }
+func (v valueCollector) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(v.desc, prometheus.GaugeValue, 1)
+}
+
+// TestRegistry_NonPointerCollectorIsNotMatchedByIdentity covers the fail-closed
+// branch of sameCollector. Identity is pointer identity, because == panics on
+// an interface holding a non-comparable value; a collector that cannot be
+// compared that way is reported as NOT the same, so its named entry survives
+// a removal it cannot be proven to be part of.
+func TestRegistry_NonPointerCollectorIsNotMatchedByIdentity(t *testing.T) {
+	r := NewRegistry("nonptr")
+	c := valueCollector{desc: prometheus.NewDesc("nonptr_thing", "h", nil, nil)}
+
+	require.NoError(t, r.Register("tracked", c))
+	// The collector itself is removed from the Prometheus registry...
+	assert.True(t, r.UnregisterCollector(c))
+	// ...but identity could not be established, so the name was left alone
+	// rather than deleted on a guess.
+	assert.False(t, r.Unregister("tracked"),
+		"the name outlives the collector; the registry no longer holds it")
+}
+
+// TestRegistry_IncompatibleDescriptorPanics covers the registration failure
+// that is NOT AlreadyRegistered: Prometheus rejects a second descriptor
+// sharing a fully-qualified name but differing in help or label names. There
+// is no existing collector to hand back, so the build cannot continue.
+func TestRegistry_IncompatibleDescriptorPanics(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ns    string
+		build func(*Registry)
+	}{
+		{"different help", "desc_help", func(r *Registry) {
+			r.Counter("thing_total").Help("first").Build()
+			r.Counter("thing_total").Help("second").Build()
+		}},
+		{"different label names", "desc_labels", func(r *Registry) {
+			r.Counter("thing_total").Help("h").Labels("a").BuildVec()
+			r.Counter("thing_total").Help("h").Labels("b").BuildVec()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRegistry(tc.ns)
+			var got any
+			func() {
+				defer func() { got = recover() }()
+				tc.build(r)
+			}()
+			err, ok := got.(error)
+			require.Truef(t, ok, "want a panic carrying Prometheus's error, got %#v", got)
+			assert.Contains(t, err.Error(), "has different label names or a different help string")
+		})
+	}
+}
