@@ -453,7 +453,7 @@ ready-made groups: `AuthMetrics`, `OTPMetrics`, `CacheMetrics`, `RedisMetrics`,
 
 ## Upgrade Notes (v3.0.0)
 
-Three things the compiler will point at, and two it will not. The last two are
+Four things the compiler will point at, and two it will not. The last two are
 bug fixes, and both change numbers you may already be alerting on.
 
 - **The import path is `/v3`.** `go get github.com/soulteary/metrics-kit/v3`,
@@ -467,7 +467,15 @@ bug fixes, and both change numbers you may already be alerting on.
   the entire Fiber dependency tree leaves its `go.mod` and `go.sum`.
 - **`FiberMiddleware` is a function, not a method.** A subpackage cannot add
   methods to another package's type, so `m.FiberMiddleware(cfg)` became
-  `fiberadapter.Middleware(m, cfg)`. The constructors keep their shape.
+  `fiberadapter.Middleware(m, cfg)`.
+- **The middleware constructors return the registry too.** `NewMiddleware(ns)`
+  and `NewMiddlewareWithConfig(cfg)` now return
+  `(fiber.Handler, *metrics.Registry)`. They build the `HTTPMetrics`
+  themselves, and with no `Registry` in the config `NewHTTPMetrics` makes one --
+  returning only the handler dropped the only reference to it, so what the
+  middleware recorded could be scraped by nobody. `Handler()` serves the
+  *default* registry, which is not that one. Serve what a middleware collects
+  with `HandlerFor(reg)`.
 - **Failed Fiber requests are no longer counted as successes.** Fiber runs
   `app.ErrorHandler` *after* the middleware chain unwinds, so the status read
   straight after `c.Next()` was still 200 for a request the client received a
@@ -483,11 +491,13 @@ bug fixes, and both change numbers you may already be alerting on.
   rebuilt the path and hid it; `DisablePathNormalization` and any
   `PathTransformFunc` returning its argument unchanged did not.
 
-One name was added: `HTTPMetricsConfig.TransformPath`, the exported form of what
-was `transformPath`. An adapter outside this package has to normalize paths the
-way the rest of it does -- limiting label cardinality is the entire point of that
-step -- so any out-of-tree adapter (Echo, Gin, chi) can read the rule instead of
-restating it.
+Two names were added. `HTTPMetricsConfig.TransformPath` is the exported form of
+what was `transformPath`: an adapter outside this package has to normalize paths
+the way the rest of it does -- limiting label cardinality is the entire point of
+that step -- so any out-of-tree adapter (Echo, Gin, chi) can read the rule
+instead of restating it. `HTTPMetrics.Registry` reports where those collectors
+were registered, which is what lets the constructors above hand a registry
+back.
 
 ## Upgrade Notes (v2.2.0)
 

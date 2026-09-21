@@ -449,7 +449,7 @@ app.Get("/metrics", fiberadapter.HandlerFor(reg))
 
 ## 升级说明（v3.0.0）
 
-三处编译器会直接报错，两处不会。后两条是 bug 修复，都会改变你可能已经在用来告警的数字。
+四处编译器会直接报错，两处不会。后两条是 bug 修复，都会改变你可能已经在用来告警的数字。
 
 - **导入路径改为 `/v3`**：`go get github.com/soulteary/metrics-kit/v3`，然后改导入。
   `/v2` 停在 v2.2.0 原地不动，不受下面任何一条影响——这正是要跳主版本、
@@ -458,7 +458,13 @@ app.Get("/metrics", fiberadapter.HandlerFor(reg))
   一个从不碰 `fiberadapter` 的 net/http 服务不再链接 fasthttp，
   整棵 Fiber 依赖树也会从它的 `go.mod` 和 `go.sum` 中消失。
 - **`FiberMiddleware` 从方法变成函数**：子包无法给另一个包的类型添加方法，
-  所以 `m.FiberMiddleware(cfg)` 变成 `fiberadapter.Middleware(m, cfg)`。构造函数签名不变。
+  所以 `m.FiberMiddleware(cfg)` 变成 `fiberadapter.Middleware(m, cfg)`。
+- **中间件构造函数同时返回注册表**：`NewMiddleware(ns)` 与 `NewMiddlewareWithConfig(cfg)`
+  现在返回 `(fiber.Handler, *metrics.Registry)`。它们自己构造 `HTTPMetrics`，
+  而配置里没有 `Registry` 时 `NewHTTPMetrics` 会新建一个——只返回 handler
+  就把这个注册表的唯一引用丢掉了，中间件记录的东西谁也抓不到。
+  `Handler()` 服务的是**默认**注册表，不是那一个。
+  用 `HandlerFor(reg)` 来暴露某个中间件采集到的指标。
 - **失败的 Fiber 请求不再被记成成功**：Fiber 是在整个中间件链**退栈之后**才跑
   `app.ErrorHandler` 的，所以紧接 `c.Next()` 读到的状态码，对一个客户端收到 500 的请求来说
   仍然是 200，每一次失败都被记成了 `status="200"`。**预期你的错误率不再恒为零**——
@@ -470,9 +476,11 @@ app.Get("/metrics", fiberadapter.HandlerFor(reg))
   `DefaultPathNormalize` 会重建字符串因而掩盖了这个问题；
   `DisablePathNormalization` 以及任何原样返回入参的 `PathTransformFunc` 则不会。
 
-新增了一个名字：`HTTPMetricsConfig.TransformPath`，也就是原来 `transformPath` 的导出形式。
+新增了两个名字。`HTTPMetricsConfig.TransformPath` 是原来 `transformPath` 的导出形式：
 包外的 adapter 必须用与本包一致的方式归一化路径——限制标签基数正是这一步的全部意义——
 这样任何树外 adapter（Echo、Gin、chi）都能直接读取规则，而不必自己重述一遍。
+`HTTPMetrics.Registry` 则报告这些采集器注册到了哪里，上面那两个构造函数
+之所以能把注册表交回来，靠的就是它。
 
 ## 升级说明（v2.2.0）
 
