@@ -12,7 +12,9 @@
 package fiberadapter
 
 import (
+	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -71,9 +73,27 @@ func Middleware(m *metrics.HTTPMetrics, cfg metrics.HTTPMetricsConfig) fiber.Han
 			return c.Next()
 		}
 
-		path = cfg.TransformPath(path)
+		// Copy before the strings outlive the request.
+		//
+		// c.Path() and c.Method() are unsafe views onto fasthttp's pooled
+		// request buffer -- Fiber only guarantees them until the handler
+		// returns, which is what its Immutable config option is for. A
+		// Prometheus label value is retained for the life of the process, so
+		// keeping the view lets the NEXT request rewrite an already-recorded
+		// label in place: two vec entries then report the same label set,
+		// Gather() fails with a duplicate, and promhttp answers /metrics with
+		// a 500 from then on -- the whole endpoint, not just these series.
+		//
+		// It only shows when nothing downstream happens to allocate.
+		// DefaultPathNormalize rebuilds the path and hides it; the raw-path
+		// opt-out and any PathTransformFunc returning its argument unchanged
+		// do not. Cloning here rather than after the transform also spares a
+		// user-supplied PathTransformFunc a string it must not keep.
+		//
+		// After the skip check, so a skipped path still costs no allocation.
+		path = cfg.TransformPath(strings.Clone(path))
 		path = metrics.SanitizeLabelValue(path, metrics.DefaultLabelValueMaxLength)
-		method := metrics.SanitizeLabelValue(c.Method(), metrics.DefaultLabelValueMaxLength)
+		method := metrics.SanitizeLabelValue(strings.Clone(c.Method()), metrics.DefaultLabelValueMaxLength)
 
 		// Track in-flight requests
 		if m.RequestsInFlight != nil {
@@ -104,7 +124,7 @@ func Middleware(m *metrics.HTTPMetrics, cfg metrics.HTTPMetricsConfig) fiber.Han
 
 		// Record metrics
 		duration := time.Since(start).Seconds()
-		status := metrics.SanitizeLabelValue(strconv.Itoa(c.Response().StatusCode()), metrics.DefaultLabelValueMaxLength)
+		status := metrics.SanitizeLabelValue(strconv.Itoa(statusCode(c, err)), metrics.DefaultLabelValueMaxLength)
 
 		m.RequestsTotal.WithLabelValues(method, path, status).Inc()
 		m.RequestDuration.WithLabelValues(method, path).Observe(duration)
@@ -116,4 +136,31 @@ func Middleware(m *metrics.HTTPMetrics, cfg metrics.HTTPMetricsConfig) fiber.Han
 
 		return err
 	}
+}
+
+// statusCode is the status the client will actually see.
+//
+// Fiber runs app.ErrorHandler AFTER the whole middleware chain unwinds, so at
+// this point a handler that returned an error has not set a status yet and
+// c.Response().StatusCode() still reads 200 -- every failed request would be
+// counted as a success, and an alert on requests_total{status=~"5.."} would
+// never fire.
+//
+// The error's own code is used instead, the way Fiber's DefaultErrorHandler
+// derives it. Running app.ErrorHandler here to get the definitive status (what
+// Fiber's logger middleware does) is deliberately NOT done: the handler would
+// then run twice for anyone pairing this with that logger.
+//
+// The residue is a custom ErrorHandler mapping a non-fiber.Error to something
+// other than 500 -- recorded as 500 rather than its real code. Still an error,
+// which is the distinction the metric exists to make.
+func statusCode(c fiber.Ctx, err error) int {
+	if err == nil {
+		return c.Response().StatusCode()
+	}
+	var fe *fiber.Error
+	if errors.As(err, &fe) {
+		return fe.Code
+	}
+	return fiber.StatusInternalServerError
 }
