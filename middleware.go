@@ -85,14 +85,15 @@ func DefaultHTTPMetricsConfig() HTTPMetricsConfig {
 	}
 }
 
+// TransformPath applies this config's path normalization: SkipPaths are the
+// caller's business, but everything else -- a custom PathTransformFunc, or
+// DefaultPathNormalize collapsing /users/123 to /users/:id -- runs here.
+//
 // A nil PathTransformFunc means DefaultPathNormalize. It cannot also mean
 // "raw path": a config built as a struct literal leaves the field nil without
 // intending anything by it, and a raw URL path as a label value lets anyone
 // requesting random URLs mint a new time series per request. Raw paths are
 // spelled DisablePathNormalization.
-// TransformPath applies this config's path normalization: SkipPaths are the
-// caller's business, but everything else -- a custom PathTransformFunc, or
-// DefaultPathNormalize collapsing /users/123 to /users/:id -- runs here.
 //
 // Exported so a framework adapter normalizes labels exactly the way the rest
 // of the package does; label cardinality is the whole point of this step, and
