@@ -37,14 +37,14 @@ func Example() {
 		if err != nil {
 			panic(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if err != nil {
 		panic(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		panic(err)
@@ -80,13 +80,13 @@ func ExampleMiddleware() {
 	if err != nil {
 		panic(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	resp, err = app.Test(httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if err != nil {
 		panic(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		panic(err)
