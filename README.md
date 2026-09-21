@@ -23,8 +23,8 @@ A unified Prometheus metrics toolkit for Go services. This package provides metr
 > | `metrics.FiberHandlerFor(reg)` | `fiberadapter.HandlerFor(reg)` |
 > | `metrics.FiberHandlerForGatherer(g)` | `fiberadapter.HandlerForGatherer(g)` |
 > | `metrics.NewFiberHandler(opts)` | `fiberadapter.NewHandler(opts)` |
-> | `metrics.NewFiberMiddleware(ns)` | `fiberadapter.NewMiddleware(ns)` |
-> | `metrics.NewFiberMiddlewareWithConfig(cfg)` | `fiberadapter.NewMiddlewareWithConfig(cfg)` |
+> | `metrics.NewFiberMiddleware(ns)` | `mw, reg := fiberadapter.NewMiddleware(ns)` |
+> | `metrics.NewFiberMiddlewareWithConfig(cfg)` | `mw, reg := fiberadapter.NewMiddlewareWithConfig(cfg)` |
 > | `m.FiberMiddleware(cfg)` | `fiberadapter.Middleware(m, cfg)` |
 >
 > Nothing on the net/http side changed.
@@ -134,8 +134,11 @@ import (
 
 app := fiber.New()
 
-// Simple middleware
-app.Use(fiberadapter.NewMiddleware("myservice"))
+// Simple middleware. The second return is the registry the metrics went
+// into -- without it nothing can scrape them.
+mw, reg := fiberadapter.NewMiddleware("myservice")
+app.Use(mw)
+app.Get("/metrics", fiberadapter.HandlerFor(reg))
 
 // With custom configuration (default config already uses DefaultPathNormalize)
 cfg := metrics.HTTPMetricsConfig{
@@ -147,8 +150,12 @@ cfg := metrics.HTTPMetricsConfig{
     IncludeRequestsInFlight: true,
     PathTransformFunc:       metrics.DefaultPathNormalize, // /users/123 -> /users/:id
 }
-app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
+mw, reg = fiberadapter.NewMiddlewareWithConfig(cfg)
+app.Use(mw)
 ```
+
+Set `cfg.Registry` to put the HTTP metrics into a registry you already have --
+see [Herald](#herald-otp-service) for one `/metrics` serving both.
 
 ### Common Metrics Patterns
 
@@ -290,8 +297,13 @@ func main() {
     
     app := fiber.New()
     
-    // Add metrics middleware
-    app.Use(fiberadapter.NewMiddleware("herald"))
+    // Add metrics middleware, into the SAME registry the endpoint serves.
+    // Without cfg.Registry it builds its own, and these HTTP metrics would
+    // be missing from /metrics.
+    cfg := metrics.DefaultHTTPMetricsConfig()
+    cfg.Registry = registry.WithSubsystem("http")
+    mw, _ := fiberadapter.NewMiddlewareWithConfig(cfg)
+    app.Use(mw)
     
     // Add metrics endpoint
     app.Get("/metrics", fiberadapter.HandlerFor(registry))
@@ -389,15 +401,17 @@ None of these authenticate. See [Security and Deployment](#security-and-deployme
 ```go
 cfg := metrics.DefaultHTTPMetricsConfig()
 m := metrics.NewHTTPMetrics(cfg)                 // the collectors, to drive yourself
+                                                 // m.Registry is where they landed
 
-app.Use(fiberadapter.NewMiddleware("myapp"))     // or
-app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
+mw, reg := fiberadapter.NewMiddleware("myapp")   // or NewMiddlewareWithConfig(cfg)
+app.Use(mw)
+app.Get("/metrics", fiberadapter.HandlerFor(reg))
 ```
 
 | Option | Default | Notes |
 |--------|---------|-------|
 | `Namespace` / `Subsystem` | from the registry | metric name prefix |
-| `Registry` | `DefaultRegistry()` | where the collectors land |
+| `Registry` | a new isolated registry | where the collectors land; `m.Registry` and the middleware constructors report which |
 | `PathTransformFunc` | `DefaultPathNormalize` | applied by the middleware regardless |
 | `DisablePathNormalization` | `false` | log raw paths — read the warning first |
 | `SkipPaths` | none | paths to record nothing for |

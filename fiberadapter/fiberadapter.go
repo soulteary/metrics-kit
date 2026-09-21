@@ -45,16 +45,29 @@ func NewHandler(opts metrics.HandlerOpts) fiber.Handler {
 	return adaptor.HTTPHandler(metrics.NewHandler(opts))
 }
 
-// NewMiddleware creates a Fiber middleware with default configuration.
-func NewMiddleware(namespace string) fiber.Handler {
+// NewMiddleware creates a Fiber middleware with default configuration, and
+// returns the registry its metrics were recorded into.
+//
+// The registry is half the return value, not a convenience. These
+// constructors build the HTTPMetrics themselves, and with no Registry in the
+// config NewHTTPMetrics makes one; returning only the handler dropped the
+// only reference to it, so what the middleware recorded could be scraped by
+// nobody -- Handler() serves the DEFAULT registry, which is not that one.
+// Serve what this middleware collects with HandlerFor(reg).
+//
+// Passing a config that names a Registry hands that same one back.
+func NewMiddleware(namespace string) (fiber.Handler, *metrics.Registry) {
 	cfg := metrics.DefaultHTTPMetricsConfig()
 	cfg.Namespace = namespace
-	return Middleware(metrics.NewHTTPMetrics(cfg), cfg)
+	return NewMiddlewareWithConfig(cfg)
 }
 
-// NewMiddlewareWithConfig creates a Fiber middleware with custom configuration.
-func NewMiddlewareWithConfig(cfg metrics.HTTPMetricsConfig) fiber.Handler {
-	return Middleware(metrics.NewHTTPMetrics(cfg), cfg)
+// NewMiddlewareWithConfig creates a Fiber middleware with custom
+// configuration, and returns the registry its metrics were recorded into.
+// See NewMiddleware for why the registry comes back with the handler.
+func NewMiddlewareWithConfig(cfg metrics.HTTPMetricsConfig) (fiber.Handler, *metrics.Registry) {
+	m := metrics.NewHTTPMetrics(cfg)
+	return Middleware(m, cfg), m.Registry
 }
 
 // Middleware returns a Fiber middleware that collects HTTP metrics around
