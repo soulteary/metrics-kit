@@ -1,4 +1,4 @@
-module github.com/soulteary/metrics-kit/v2
+module github.com/soulteary/metrics-kit/v3
 
 go 1.27.0
 

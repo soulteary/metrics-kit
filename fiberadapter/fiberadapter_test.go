@@ -25,8 +25,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	metrics "github.com/soulteary/metrics-kit/v2"
-	"github.com/soulteary/metrics-kit/v2/fiberadapter"
+	metrics "github.com/soulteary/metrics-kit/v3"
+	"github.com/soulteary/metrics-kit/v3/fiberadapter"
 )
 
 // --- helpers -------------------------------------------------------------

@@ -1,6 +1,6 @@
 # metrics-kit
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit/v2.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit/v2)
+[![Go Reference](https://pkg.go.dev/badge/github.com/soulteary/metrics-kit/v3.svg)](https://pkg.go.dev/github.com/soulteary/metrics-kit/v3)
 [![Go Report Card](.github/goreportcard.svg)](.github/goreportcard-report.md)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/soulteary/metrics-kit/graph/badge.svg)](https://codecov.io/gh/soulteary/metrics-kit)
@@ -10,10 +10,20 @@
 统一的 Go 服务 Prometheus 指标工具包。提供指标构建器、注册表管理、HTTP 处理器和中间件，实现跨服务的一致性指标收集。
 
 
-> **v2.3.0 破坏性变更 —— Fiber 支持移入子包。**
-> Fiber handler 与中间件现位于 `github.com/soulteary/metrics-kit/v2/fiberadapter`，
+> **v3.0.0 破坏性变更 —— 导入路径改为 `/v3`，且 Fiber 支持移入子包。**
+>
+> ```diff
+> -import metrics "github.com/soulteary/metrics-kit/v2"
+> +import metrics "github.com/soulteary/metrics-kit/v3"
+> ```
+>
+> 主版本号必须跳：v2.3.0 意味着从 `/v2` 这个导入路径上删掉导出函数，
+> 现有用户跑 `go get -u` 会拿到一个编译不过的版本。改成 `/v3` 后 v2 原地不动，
+> 在你主动改导入路径之前什么都不会坏。
+>
+> Fiber handler 与中间件现位于 `github.com/soulteary/metrics-kit/v3/fiberadapter`，
 > 于是导入根包不再把 Fiber（以及 fasthttp）链接进用不到它的二进制。
-> 对一个 net/http 服务来说，这意味着**少链接 26 个包、少 10 个模块、二进制小 7%**
+> 对一个 net/http 服务来说，这意味着**少链接 26 个包、少 10 个模块、二进制更小**
 > （剩下的体积是 Prometheus，本来就要）。
 >
 > | 原来 | 现在 |
@@ -26,7 +36,7 @@
 > | `metrics.NewFiberMiddlewareWithConfig(cfg)` | `fiberadapter.NewMiddlewareWithConfig(cfg)` |
 > | `m.FiberMiddleware(cfg)` | `fiberadapter.Middleware(m, cfg)` |
 >
-> net/http 一侧没有任何变化。
+> 除导入路径外，net/http 一侧没有任何变化。
 
 ## 特性
 
@@ -41,7 +51,7 @@
 ## 安装
 
 ```bash
-go get github.com/soulteary/metrics-kit/v2
+go get github.com/soulteary/metrics-kit/v3
 ```
 
 ## 使用
@@ -50,7 +60,7 @@ go get github.com/soulteary/metrics-kit/v2
 
 ```go
 import (
-    metrics "github.com/soulteary/metrics-kit/v2"
+    metrics "github.com/soulteary/metrics-kit/v3"
 )
 
 // 创建带命名空间的注册表
@@ -99,8 +109,8 @@ activeConns.Dec()
 ```go
 import (
     "net/http"
-    metrics "github.com/soulteary/metrics-kit/v2"
-    "github.com/soulteary/metrics-kit/v2/fiberadapter"
+    metrics "github.com/soulteary/metrics-kit/v3"
+    "github.com/soulteary/metrics-kit/v3/fiberadapter"
 )
 
 // 标准库（仅使用默认 Prometheus 注册表）
@@ -127,8 +137,8 @@ http.Handle("/metrics", handler)
 ```go
 import (
     "github.com/gofiber/fiber/v3"
-    metrics "github.com/soulteary/metrics-kit/v2"
-    "github.com/soulteary/metrics-kit/v2/fiberadapter"
+    metrics "github.com/soulteary/metrics-kit/v3"
+    "github.com/soulteary/metrics-kit/v3/fiberadapter"
 )
 
 app := fiber.New()
@@ -272,8 +282,8 @@ package main
 
 import (
     "github.com/gofiber/fiber/v3"
-    metrics "github.com/soulteary/metrics-kit/v2"
-    "github.com/soulteary/metrics-kit/v2/fiberadapter"
+    metrics "github.com/soulteary/metrics-kit/v3"
+    "github.com/soulteary/metrics-kit/v3/fiberadapter"
 )
 
 func main() {
@@ -310,7 +320,7 @@ func main() {
 package main
 
 import (
-    metrics "github.com/soulteary/metrics-kit/v2"
+    metrics "github.com/soulteary/metrics-kit/v3"
 )
 
 func main() {
@@ -423,6 +433,33 @@ app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
 - 直接调用 `registry.PrometheusRegistry().Unregister(collector)` 仍然可行，但本包无法感知该调用，shape 记录会被遗留。请优先使用 `UnregisterCollector`。
 - 另外请注意：用**不同的标签名**重新注册同一指标名，无论如何都会在 Prometheus 内部 panic——`client_golang` 有意在整个进程生命周期内保留 `dimHashesByName`。
 
+## 升级说明（v3.0.0）
+
+三处编译器会直接报错，两处不会。后两条是 bug 修复，都会改变你可能已经在用来告警的数字。
+
+- **导入路径改为 `/v3`**：`go get github.com/soulteary/metrics-kit/v3`，然后改导入。
+  `/v2` 停在 v2.2.0 原地不动，不受下面任何一条影响——这正是要跳主版本、
+  而不是发一个从既有导入路径上删导出名字的 v2.3.0 的理由。
+- **Fiber 移入 `fiberadapter`**：本文件顶部表格里的七个名字换了包；根包不再导入 Fiber。
+  一个从不碰 `fiberadapter` 的 net/http 服务不再链接 fasthttp，
+  整棵 Fiber 依赖树也会从它的 `go.mod` 和 `go.sum` 中消失。
+- **`FiberMiddleware` 从方法变成函数**：子包无法给另一个包的类型添加方法，
+  所以 `m.FiberMiddleware(cfg)` 变成 `fiberadapter.Middleware(m, cfg)`。构造函数签名不变。
+- **失败的 Fiber 请求不再被记成成功**：Fiber 是在整个中间件链**退栈之后**才跑
+  `app.ErrorHandler` 的，所以紧接 `c.Next()` 读到的状态码，对一个客户端收到 500 的请求来说
+  仍然是 200，每一次失败都被记成了 `status="200"`。**预期你的错误率不再恒为零**——
+  一条从来没触发过的 `requests_total{status=~"5.."}` 告警现在会触发了。
+- **标签值不再被下一个请求改写**：`c.Path()` 与 `c.Method()` 是指向 fasthttp 池化请求缓冲区的
+  unsafe 视图，只在 handler 返回前有效，而 Prometheus 标签是进程级长期持有的。
+  下一个请求会原地改写已记录的标签，两条序列冲突，`Gather()` 报 duplicate 错误，
+  `/metrics` 从此一律返回 500——挂掉的是注册表里的**全部**指标。
+  `DefaultPathNormalize` 会重建字符串因而掩盖了这个问题；
+  `DisablePathNormalization` 以及任何原样返回入参的 `PathTransformFunc` 则不会。
+
+新增了一个名字：`HTTPMetricsConfig.TransformPath`，也就是原来 `transformPath` 的导出形式。
+包外的 adapter 必须用与本包一致的方式归一化路径——限制标签基数正是这一步的全部意义——
+这样任何树外 adapter（Echo、Gin、chi）都能直接读取规则，而不必自己重述一遍。
+
 ## 升级说明（v2.2.0）
 
 新增一个字段和两个函数，没有删除任何东西。第一条会把崩溃变成正常运行——这正是目的。
@@ -461,8 +498,10 @@ app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
 ## 要求
 
 - **Go 1.27+**（`go.mod` 声明 `go 1.27.0`）
+- 导入路径 **`github.com/soulteary/metrics-kit/v3`**
 - github.com/prometheus/client_golang v1.22.0+
-- github.com/gofiber/fiber/v3 v3.4.0+（用于 Fiber 中间件）
+- github.com/gofiber/fiber/v3 v3.4.0+ —— **仅当你导入 `fiberadapter` 时需要**。
+  根包不链接 Fiber，这正是 v3 拆分的意义所在。
 
 此 v2 模块版本面向 Fiber v3。仍使用 Fiber v2 的应用应继续使用 `github.com/soulteary/metrics-kit` v1。
 
