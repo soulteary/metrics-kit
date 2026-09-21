@@ -42,8 +42,8 @@
 
 - **注册表管理**：支持命名空间/子系统的自定义 Prometheus 注册表
 - **流式构建器**：Counter、Gauge、Histogram、Summary 构建器，支持链式调用
-- **HTTP 处理器**：标准库和 Fiber 兼容的 `/metrics` 端点处理器（可通过 `HandlerOpts` 设置超时）
-- **HTTP 中间件**：Fiber 请求指标收集中间件，默认路径归一化以控制标签基数
+- **HTTP 处理器**：net/http 的 `/metrics` 端点处理器，以及通过 `fiberadapter` 子包提供的 Fiber 版本（可通过 `HandlerOpts` 设置超时）
+- **HTTP 中间件**：Fiber 请求指标收集中间件，位于 `fiberadapter` 子包——根包不链接任何 Web 框架。默认路径归一化以控制标签基数。net/http 一侧用 `RecordRequest` 自行记录
 - **标签安全**：`SanitizeLabelValue` 处理不可信标签值；`DefaultPathNormalize` 用于路径类标签
 - **通用指标**：预置的缓存、限流、Redis、认证、OTP 等常用指标模式
 - **桶预设**：HTTP、Redis、外部 API、字节大小的预定义直方图桶

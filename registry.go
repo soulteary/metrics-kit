@@ -1,5 +1,15 @@
-// Package metrics provides a unified Prometheus metrics toolkit for Go services.
-// It includes registry management, metric builders, HTTP handlers, and middleware.
+// Package metrics provides a unified Prometheus metrics toolkit for Go services:
+// registry management, fluent metric builders, /metrics handlers for net/http,
+// and ready-made metric groups for caches, rate limiters, Redis and the like.
+//
+// Framework middleware lives in subpackages, so importing this one links no web
+// framework. Fiber support -- its /metrics handlers and its request middleware --
+// is [github.com/soulteary/metrics-kit/v3/fiberadapter]; before v3 those names
+// were FiberHandler, NewFiberMiddleware and friends in this package.
+//
+// What this package offers for instrumenting requests is [NewHTTPMetrics] plus
+// [HTTPMetrics.RecordRequest] and [HTTPMetrics.RecordRequestWithSize], which
+// record one request each from wherever you call them.
 package metrics
 
 import (

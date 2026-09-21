@@ -44,8 +44,8 @@ A unified Prometheus metrics toolkit for Go services. This package provides metr
 
 - **Registry Management**: Custom Prometheus registry with namespace/subsystem support
 - **Fluent Builders**: Counter, Gauge, Histogram, and Summary builders with method chaining
-- **HTTP Handlers**: Standard and Fiber-compatible `/metrics` endpoint handlers (optional timeout via `HandlerOpts`)
-- **HTTP Middleware**: Request metrics collection for Fiber framework, with default path normalization to limit label cardinality
+- **HTTP Handlers**: `/metrics` endpoint handlers for net/http, and for Fiber via the `fiberadapter` subpackage (optional timeout via `HandlerOpts`)
+- **HTTP Middleware**: Request metrics collection for Fiber, in `fiberadapter` — the root package links no web framework. Default path normalization limits label cardinality. On net/http you record requests yourself with `RecordRequest`
 - **Label Safety**: `SanitizeLabelValue` for safe label values from untrusted input; `DefaultPathNormalize` for path-based labels
 - **Common Metrics**: Pre-built metric patterns for cache, rate limiting, Redis, auth, OTP, etc.
 - **Bucket Presets**: Predefined histogram buckets for HTTP, Redis, external APIs, and bytes
