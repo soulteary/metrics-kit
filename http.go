@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -28,26 +26,6 @@ func HandlerForGatherer(gatherer prometheus.Gatherer) http.Handler {
 	return promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
 	})
-}
-
-// FiberHandler returns a Fiber-compatible handler for the /metrics endpoint
-// using the default Prometheus registry.
-func FiberHandler() fiber.Handler {
-	return adaptor.HTTPHandler(promhttp.Handler())
-}
-
-// FiberHandlerFor returns a Fiber-compatible handler for the given registry.
-func FiberHandlerFor(registry *Registry) fiber.Handler {
-	return adaptor.HTTPHandler(promhttp.HandlerFor(registry.Gatherer(), promhttp.HandlerOpts{
-		EnableOpenMetrics: true,
-	}))
-}
-
-// FiberHandlerForGatherer returns a Fiber-compatible handler for the given Gatherer.
-func FiberHandlerForGatherer(gatherer prometheus.Gatherer) fiber.Handler {
-	return adaptor.HTTPHandler(promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
-		EnableOpenMetrics: true,
-	}))
 }
 
 // HandlerOpts provides options for configuring metrics handlers.
@@ -105,11 +83,6 @@ func NewHandler(opts HandlerOpts) http.Handler {
 		h = http.TimeoutHandler(h, time.Duration(opts.Timeout)*time.Second, "metrics scrape timeout\n")
 	}
 	return h
-}
-
-// NewFiberHandler creates a new Fiber metrics handler with the given options.
-func NewFiberHandler(opts HandlerOpts) fiber.Handler {
-	return adaptor.HTTPHandler(NewHandler(opts))
 }
 
 // RegisterHTTPHandler registers the metrics handler on an http.ServeMux.

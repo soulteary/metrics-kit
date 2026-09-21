@@ -9,6 +9,25 @@
 
 统一的 Go 服务 Prometheus 指标工具包。提供指标构建器、注册表管理、HTTP 处理器和中间件，实现跨服务的一致性指标收集。
 
+
+> **v2.3.0 破坏性变更 —— Fiber 支持移入子包。**
+> Fiber handler 与中间件现位于 `github.com/soulteary/metrics-kit/v2/fiberadapter`，
+> 于是导入根包不再把 Fiber（以及 fasthttp）链接进用不到它的二进制。
+> 对一个 net/http 服务来说，这意味着**少链接 26 个包、少 10 个模块、二进制小 7%**
+> （剩下的体积是 Prometheus，本来就要）。
+>
+> | 原来 | 现在 |
+> |---|---|
+> | `metrics.FiberHandler()` | `fiberadapter.Handler()` |
+> | `metrics.FiberHandlerFor(reg)` | `fiberadapter.HandlerFor(reg)` |
+> | `metrics.FiberHandlerForGatherer(g)` | `fiberadapter.HandlerForGatherer(g)` |
+> | `metrics.NewFiberHandler(opts)` | `fiberadapter.NewHandler(opts)` |
+> | `metrics.NewFiberMiddleware(ns)` | `fiberadapter.NewMiddleware(ns)` |
+> | `metrics.NewFiberMiddlewareWithConfig(cfg)` | `fiberadapter.NewMiddlewareWithConfig(cfg)` |
+> | `m.FiberMiddleware(cfg)` | `fiberadapter.Middleware(m, cfg)` |
+>
+> net/http 一侧没有任何变化。
+
 ## 特性
 
 - **注册表管理**：支持命名空间/子系统的自定义 Prometheus 注册表
@@ -81,6 +100,7 @@ activeConns.Dec()
 import (
     "net/http"
     metrics "github.com/soulteary/metrics-kit/v2"
+    "github.com/soulteary/metrics-kit/v2/fiberadapter"
 )
 
 // 标准库（仅使用默认 Prometheus 注册表）
@@ -90,8 +110,8 @@ http.Handle("/metrics", metrics.Handler())
 http.Handle("/metrics", metrics.HandlerFor(registry))
 
 // Fiber 框架
-app.Get("/metrics", metrics.FiberHandler())
-app.Get("/metrics", metrics.FiberHandlerFor(registry)) // 使用自定义注册表时
+app.Get("/metrics", fiberadapter.Handler())
+app.Get("/metrics", fiberadapter.HandlerFor(registry)) // 使用自定义注册表时
 
 // 使用选项（如自定义注册表 + 抓取超时秒数）
 handler := metrics.NewHandler(metrics.HandlerOpts{
@@ -108,12 +128,13 @@ http.Handle("/metrics", handler)
 import (
     "github.com/gofiber/fiber/v3"
     metrics "github.com/soulteary/metrics-kit/v2"
+    "github.com/soulteary/metrics-kit/v2/fiberadapter"
 )
 
 app := fiber.New()
 
 // 简单中间件
-app.Use(metrics.NewFiberMiddleware("myservice"))
+app.Use(fiberadapter.NewMiddleware("myservice"))
 
 // 自定义配置（默认配置已使用 DefaultPathNormalize）
 cfg := metrics.HTTPMetricsConfig{
@@ -125,7 +146,7 @@ cfg := metrics.HTTPMetricsConfig{
     IncludeRequestsInFlight: true,
     PathTransformFunc:       metrics.DefaultPathNormalize, // /users/123 -> /users/:id
 }
-app.Use(metrics.NewFiberMiddlewareWithConfig(cfg))
+app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
 ```
 
 ### 通用指标模式
@@ -252,6 +273,7 @@ package main
 import (
     "github.com/gofiber/fiber/v3"
     metrics "github.com/soulteary/metrics-kit/v2"
+    "github.com/soulteary/metrics-kit/v2/fiberadapter"
 )
 
 func main() {
@@ -266,10 +288,10 @@ func main() {
     app := fiber.New()
     
     // 添加指标中间件
-    app.Use(metrics.NewFiberMiddleware("herald"))
+    app.Use(fiberadapter.NewMiddleware("herald"))
     
     // 添加指标端点
-    app.Get("/metrics", metrics.FiberHandlerFor(registry))
+    app.Get("/metrics", fiberadapter.HandlerFor(registry))
     
     // 在处理器中使用指标
     app.Post("/v1/otp/challenges", func(c fiber.Ctx) error {
@@ -351,10 +373,10 @@ http.Handle("/metrics", metrics.NewHandler(metrics.DefaultHandlerOpts()))
 metrics.RegisterHTTPHandler(mux, "/metrics")
 metrics.RegisterHTTPHandlerFor(mux, "/metrics", registry)
 
-app.Get("/metrics", metrics.FiberHandler())
-app.Get("/metrics", metrics.FiberHandlerFor(registry))
-app.Get("/metrics", metrics.FiberHandlerForGatherer(gatherer))
-app.Get("/metrics", metrics.NewFiberHandler(metrics.DefaultHandlerOpts()))
+app.Get("/metrics", fiberadapter.Handler())
+app.Get("/metrics", fiberadapter.HandlerFor(registry))
+app.Get("/metrics", fiberadapter.HandlerForGatherer(gatherer))
+app.Get("/metrics", fiberadapter.NewHandler(metrics.DefaultHandlerOpts()))
 ```
 
 它们都不做认证，详见[安全与部署](#安全与部署)。
@@ -365,8 +387,8 @@ app.Get("/metrics", metrics.NewFiberHandler(metrics.DefaultHandlerOpts()))
 cfg := metrics.DefaultHTTPMetricsConfig()
 m := metrics.NewHTTPMetrics(cfg)                 // 拿到采集器自己驱动
 
-app.Use(metrics.NewFiberMiddleware("myapp"))     // 或者
-app.Use(metrics.NewFiberMiddlewareWithConfig(cfg))
+app.Use(fiberadapter.NewMiddleware("myapp"))     // 或者
+app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
 ```
 
 | 配置项 | 默认值 | 说明 |

@@ -9,6 +9,26 @@
 
 A unified Prometheus metrics toolkit for Go services. This package provides metric builders, registry management, HTTP handlers, and middleware for consistent metrics collection across services.
 
+
+> **Breaking in v2.3.0 — Fiber support moved to a subpackage.**
+> The Fiber handlers and middleware are now
+> `github.com/soulteary/metrics-kit/v2/fiberadapter`, so importing the root
+> package no longer links Fiber (and fasthttp) into binaries that never use
+> it. In a net/http service that means **26 fewer linked packages, 10 fewer
+> modules and a 7% smaller binary** (the rest is Prometheus, which stays).
+>
+> | Before | After |
+> |---|---|
+> | `metrics.FiberHandler()` | `fiberadapter.Handler()` |
+> | `metrics.FiberHandlerFor(reg)` | `fiberadapter.HandlerFor(reg)` |
+> | `metrics.FiberHandlerForGatherer(g)` | `fiberadapter.HandlerForGatherer(g)` |
+> | `metrics.NewFiberHandler(opts)` | `fiberadapter.NewHandler(opts)` |
+> | `metrics.NewFiberMiddleware(ns)` | `fiberadapter.NewMiddleware(ns)` |
+> | `metrics.NewFiberMiddlewareWithConfig(cfg)` | `fiberadapter.NewMiddlewareWithConfig(cfg)` |
+> | `m.FiberMiddleware(cfg)` | `fiberadapter.Middleware(m, cfg)` |
+>
+> Nothing on the net/http side changed.
+
 ## Features
 
 - **Registry Management**: Custom Prometheus registry with namespace/subsystem support
@@ -81,6 +101,7 @@ activeConns.Dec()
 import (
     "net/http"
     metrics "github.com/soulteary/metrics-kit/v2"
+    "github.com/soulteary/metrics-kit/v2/fiberadapter"
 )
 
 // Standard library (uses default Prometheus registry only)
@@ -90,8 +111,8 @@ http.Handle("/metrics", metrics.Handler())
 http.Handle("/metrics", metrics.HandlerFor(registry))
 
 // For Fiber
-app.Get("/metrics", metrics.FiberHandler())
-app.Get("/metrics", metrics.FiberHandlerFor(registry)) // when using custom registry
+app.Get("/metrics", fiberadapter.Handler())
+app.Get("/metrics", fiberadapter.HandlerFor(registry)) // when using custom registry
 
 // With options (e.g. custom registry + scrape timeout in seconds)
 handler := metrics.NewHandler(metrics.HandlerOpts{
@@ -108,12 +129,13 @@ http.Handle("/metrics", handler)
 import (
     "github.com/gofiber/fiber/v3"
     metrics "github.com/soulteary/metrics-kit/v2"
+    "github.com/soulteary/metrics-kit/v2/fiberadapter"
 )
 
 app := fiber.New()
 
 // Simple middleware
-app.Use(metrics.NewFiberMiddleware("myservice"))
+app.Use(fiberadapter.NewMiddleware("myservice"))
 
 // With custom configuration (default config already uses DefaultPathNormalize)
 cfg := metrics.HTTPMetricsConfig{
@@ -125,7 +147,7 @@ cfg := metrics.HTTPMetricsConfig{
     IncludeRequestsInFlight: true,
     PathTransformFunc:       metrics.DefaultPathNormalize, // /users/123 -> /users/:id
 }
-app.Use(metrics.NewFiberMiddlewareWithConfig(cfg))
+app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
 ```
 
 ### Common Metrics Patterns
@@ -239,7 +261,7 @@ metrics-kit/
 ├── builders.go       # Fluent metric builders (Counter, Histogram, Gauge, Summary)
 ├── labels.go         # Label safety: SanitizeLabelValue, DefaultPathNormalize
 ├── http.go           # HTTP handlers for /metrics endpoint
-├── middleware.go     # Fiber HTTP middleware
+├── middleware.go     # net/http metric types (Fiber middleware lives in fiberadapter/)
 ├── common.go         # Common metric patterns (cache, redis, auth, OTP, etc.)
 └── *_test.go         # Comprehensive tests
 ```
@@ -254,6 +276,7 @@ package main
 import (
     "github.com/gofiber/fiber/v3"
     metrics "github.com/soulteary/metrics-kit/v2"
+    "github.com/soulteary/metrics-kit/v2/fiberadapter"
 )
 
 func main() {
@@ -268,10 +291,10 @@ func main() {
     app := fiber.New()
     
     // Add metrics middleware
-    app.Use(metrics.NewFiberMiddleware("herald"))
+    app.Use(fiberadapter.NewMiddleware("herald"))
     
     // Add metrics endpoint
-    app.Get("/metrics", metrics.FiberHandlerFor(registry))
+    app.Get("/metrics", fiberadapter.HandlerFor(registry))
     
     // Use metrics in handlers
     app.Post("/v1/otp/challenges", func(c fiber.Ctx) error {
@@ -353,10 +376,10 @@ http.Handle("/metrics", metrics.NewHandler(metrics.DefaultHandlerOpts()))
 metrics.RegisterHTTPHandler(mux, "/metrics")
 metrics.RegisterHTTPHandlerFor(mux, "/metrics", registry)
 
-app.Get("/metrics", metrics.FiberHandler())
-app.Get("/metrics", metrics.FiberHandlerFor(registry))
-app.Get("/metrics", metrics.FiberHandlerForGatherer(gatherer))
-app.Get("/metrics", metrics.NewFiberHandler(metrics.DefaultHandlerOpts()))
+app.Get("/metrics", fiberadapter.Handler())
+app.Get("/metrics", fiberadapter.HandlerFor(registry))
+app.Get("/metrics", fiberadapter.HandlerForGatherer(gatherer))
+app.Get("/metrics", fiberadapter.NewHandler(metrics.DefaultHandlerOpts()))
 ```
 
 None of these authenticate. See [Security and Deployment](#security-and-deployment).
@@ -367,8 +390,8 @@ None of these authenticate. See [Security and Deployment](#security-and-deployme
 cfg := metrics.DefaultHTTPMetricsConfig()
 m := metrics.NewHTTPMetrics(cfg)                 // the collectors, to drive yourself
 
-app.Use(metrics.NewFiberMiddleware("myapp"))     // or
-app.Use(metrics.NewFiberMiddlewareWithConfig(cfg))
+app.Use(fiberadapter.NewMiddleware("myapp"))     // or
+app.Use(fiberadapter.NewMiddlewareWithConfig(cfg))
 ```
 
 | Option | Default | Notes |
