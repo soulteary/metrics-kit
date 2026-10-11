@@ -519,7 +519,7 @@ app.Get("/metrics", fiberadapter.HandlerFor(reg))
 
 ## 要求
 
-- **Go 1.27+**（`go.mod` 声明 `go 1.27.0`）
+- **Go 1.27+**（`go.mod` 声明 `go 1.27.2`）
 - 导入路径 **`github.com/soulteary/metrics-kit/v3`**
 - github.com/prometheus/client_golang v1.22.0+
 - github.com/gofiber/fiber/v3 v3.4.0+ —— **仅当你导入 `fiberadapter` 时需要**。
