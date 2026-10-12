@@ -516,9 +516,9 @@ app.Get("/metrics", fiberadapter.HandlerFor(reg))
 
 ## 要求
 
-- **Go 1.27+**（`go.mod` 声明 `go 1.27.2`）
+- **Go 1.27.2+**（`go.mod` 声明 `go 1.27.2`）
 - 导入路径 **`github.com/soulteary/metrics-kit/v3`**
-- github.com/prometheus/client_golang v1.22.0+
+- github.com/prometheus/client_golang v1.24.1
 - github.com/gofiber/fiber/v3 v3.4.0+ —— **仅当你导入 `fiberadapter` 时需要**。
   根包不链接 Fiber，这正是 v3 拆分的意义所在。
 
@@ -548,3 +548,5 @@ go tool cover -func=coverage.out
 ## 许可证
 
 Apache License 2.0 —— 详见 [LICENSE](LICENSE)。
+
+本模块保留 `client_golang` v1.24.1，因为 v1.25.0 修改了 `api/prometheus/v1` 的公开方法签名。虽然 metrics-kit 只使用指标收集功能，Go 模块版本选择仍会影响导入该 API 的下游服务；升级到 v1.25.0 前需要完成相应 API 迁移。
