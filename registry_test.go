@@ -262,3 +262,22 @@ func TestRegistry_IncompatibleDescriptorPanics(t *testing.T) {
 		})
 	}
 }
+
+func TestRegistry_InitializesMissingShapeMap(t *testing.T) {
+	r := NewRegistry("lazy_shapes")
+	// Exercise the defensive initialization without changing the constructors.
+	r.state.shapes = nil
+
+	first := r.Counter("requests_total").Help("Recorded requests").Build()
+	first.Add(3)
+	second := r.Counter("requests_total").Help("Recorded requests").Build()
+
+	assert.Same(t, first, second, "duplicate builds must reuse the initialized shape state")
+	require.Len(t, r.state.shapes, 1)
+	mfs, err := r.Gatherer().Gather()
+	require.NoError(t, err)
+	require.Len(t, mfs, 1)
+	assert.Equal(t, "lazy_shapes_requests_total", mfs[0].GetName())
+	require.Len(t, mfs[0].GetMetric(), 1)
+	assert.Equal(t, 3.0, mfs[0].GetMetric()[0].GetCounter().GetValue())
+}
