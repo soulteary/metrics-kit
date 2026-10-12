@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	github.com/gofiber/fiber/v3 v3.5.0
-	github.com/prometheus/client_golang v1.25.0
+	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/stretchr/testify v1.12.1
 )

@@ -544,9 +544,9 @@ change a crash into normal operation, which is the point.
 
 ## Requirements
 
-- **Go 1.27+** (`go.mod` declares `go 1.27.2`)
+- **Go 1.27.2+** (`go.mod` declares `go 1.27.2`)
 - Import path **`github.com/soulteary/metrics-kit/v3`**
-- github.com/prometheus/client_golang v1.22.0+
+- github.com/prometheus/client_golang v1.24.1
 - github.com/gofiber/fiber/v3 v3.4.0+ — **only if you import `fiberadapter`**. The
   root package does not link Fiber, which is the point of the v3 split.
 
@@ -576,3 +576,5 @@ go tool cover -func=coverage.out
 ## License
 
 See [LICENSE](LICENSE) file for details.
+
+The module keeps `client_golang` at v1.24.1 because v1.25.0 changes the public `api/prometheus/v1` method signatures. Go module selection also affects downstream services that import that API, even though metrics-kit only uses the metrics collector. Upgrading to v1.25.0 requires a downstream API migration.
