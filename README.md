@@ -590,4 +590,3 @@ package, but Go's minimum version selection also updates it in downstream
 applications that use it directly. Those callers must check and migrate their
 query API calls when upgrading. The collector and adapter tests above do not
 verify downstream query API compatibility.
-
