@@ -544,13 +544,13 @@ change a crash into normal operation, which is the point.
 
 ## Requirements
 
-- **Go 1.27.2+** (`go.mod` declares `go 1.27.2`)
+- **Go 1.27.3+** (`go.mod` declares `go 1.27.3`)
 - Import path **`github.com/soulteary/metrics-kit/v3`**
-- github.com/prometheus/client_golang v1.24.1
-- github.com/gofiber/fiber/v3 v3.4.0+ — **only if you import `fiberadapter`**. The
+- github.com/prometheus/client_golang v1.25.0
+- github.com/gofiber/fiber/v3 v3.6.1+ — **only if you import `fiberadapter`**. The
   root package does not link Fiber, which is the point of the v3 split.
 
-This v2 module line targets Fiber v3. Applications that still use Fiber v2 should remain on `github.com/soulteary/metrics-kit` v1.
+This v3 module line targets Fiber v3. Applications that still use Fiber v2 should remain on `github.com/soulteary/metrics-kit` v1.
 
 ## Test Coverage
 
@@ -577,4 +577,17 @@ go tool cover -func=coverage.out
 
 See [LICENSE](LICENSE) file for details.
 
-The module keeps `client_golang` at v1.24.1 because v1.25.0 changes the public `api/prometheus/v1` method signatures. Go module selection also affects downstream services that import that API, even though metrics-kit only uses the metrics collector. Upgrading to v1.25.0 requires a downstream API migration.
+## Upgrade Notes (v3.0.4)
+
+This patch updates `client_golang` from v1.24.1 to v1.25.0, Fiber from v3.5.0
+to v3.6.1, and compatible transitive dependencies. The metrics-kit public API
+and `/v3` import path remain unchanged. Its collector, HTTP handler and Fiber
+adapter tests pass with the race detector and 100% statement coverage.
+
+`client_golang` v1.25.0 changes method signatures in its separate
+`api/prometheus/v1` query API. metrics-kit neither imports nor re-exports that
+package, but Go's minimum version selection also updates it in downstream
+applications that use it directly. Those callers must check and migrate their
+query API calls when upgrading. The collector and adapter tests above do not
+verify downstream query API compatibility.
+
