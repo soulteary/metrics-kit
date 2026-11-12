@@ -577,6 +577,11 @@ go tool cover -func=coverage.out
 
 See [LICENSE](LICENSE) file for details.
 
+## Upgrade Notes (v3.0.5)
+
+This patch requires Go 1.27.4. Dependencies, the public API and the `/v3`
+import path are unchanged from v3.0.4.
+
 ## Upgrade Notes (v3.0.4)
 
 This patch updates `client_golang` from v1.24.1 to v1.25.0, Fiber from v3.5.0
