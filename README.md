@@ -544,7 +544,7 @@ change a crash into normal operation, which is the point.
 
 ## Requirements
 
-- **Go 1.27.3+** (`go.mod` declares `go 1.27.3`)
+- **Go 1.27.4+** (`go.mod` declares `go 1.27.4`)
 - Import path **`github.com/soulteary/metrics-kit/v3`**
 - github.com/prometheus/client_golang v1.25.0
 - github.com/gofiber/fiber/v3 v3.6.1+ — **only if you import `fiberadapter`**. The
