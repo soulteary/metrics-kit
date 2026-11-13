@@ -577,6 +577,12 @@ go tool cover -func=coverage.out
 
 See [LICENSE](LICENSE) file for details.
 
+## Upgrade Notes (v3.0.6)
+
+This patch updates `github.com/gofiber/fiber/v3` from v3.6.1 to v3.7.0. An
+application that selects it is moved to Fiber v3.7.0 or later. The public API
+and the `/v3` import path are unchanged from v3.0.5.
+
 ## Upgrade Notes (v3.0.5)
 
 This patch requires Go 1.27.4. Dependencies, the public API and the `/v3`
